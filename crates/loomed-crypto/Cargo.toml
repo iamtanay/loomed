@@ -1,0 +1,17 @@
+[package]
+name = "loomed-crypto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+sha2 = { workspace = true }
+argon2 = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

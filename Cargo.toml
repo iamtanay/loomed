@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/loomed-core",
+    "crates/loomed-crypto",
+    "crates/loomed-store",
+    "crates/loomed-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Baniloo"]
+license = "Apache-2.0"
+repository = "https://github.com/iamtanay/loomed"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+blake3 = "1"
+sha2 = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+aes-gcm = "0.10"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

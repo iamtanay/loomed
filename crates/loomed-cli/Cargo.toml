@@ -1,0 +1,21 @@
+[package]
+name = "loomed-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "loomed"
+path = "src/main.rs"
+
+[dependencies]
+loomed-core = { path = "../loomed-core" }
+loomed-store = { path = "../loomed-store" }
+loomed-crypto = { path = "../loomed-crypto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+rpassword = { workspace = true }
