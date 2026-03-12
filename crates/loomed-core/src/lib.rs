@@ -22,8 +22,10 @@ pub mod builder;
 pub mod commit;
 pub mod error;
 pub mod participant;
+pub mod verify;
 
 pub use builder::{prepare, PendingCommit};
 pub use commit::{AuthorizationRef, Commit, CommitHash, ContentHash, RecordType, SyncMetadata, TokenId};
 pub use error::LooMedError;
 pub use participant::{ParticipantId, ParticipantType};
+pub use verify::{verify_chain, verify_commit, ChainVerification, CommitVerification};
