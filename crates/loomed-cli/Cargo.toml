@@ -19,3 +19,5 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 rpassword = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }

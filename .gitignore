@@ -1,2 +1,19 @@
+# Rust build output
 /target
+
+# Cargo lockfile — omitted for libraries, committed for binaries.
+# LooMed is a protocol library — exclude it.
 Cargo.lock
+
+# Patient vault data — must never be committed to version control.
+# Contains encrypted medical records and vault metadata.
+.loomed/
+
+# VS Code workspace settings
+.vscode/
+
+# Windows thumbnail cache
+Thumbs.db
+
+# macOS metadata
+.DS_Store
