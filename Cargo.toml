@@ -30,6 +30,7 @@ rpassword = "7"
 uuid = { version = "1", features = ["v4"] }
 hex = "0.4"
 toml = "0.8"
+tempfile = "3"
 
 [profile.release]
 opt-level = 3
