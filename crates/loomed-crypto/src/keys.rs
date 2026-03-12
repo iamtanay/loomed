@@ -71,6 +71,46 @@ pub fn generate_keypair() -> LooMedKeypair {
     }
 }
 
+/// Derives a deterministic ed25519 keypair from a passphrase and salt.
+///
+/// Uses the Argon2id-derived key bytes as the seed for the ed25519
+/// signing key. This ensures the same passphrase and salt always
+/// produce the same keypair, enabling consistent signing across
+/// multiple command invocations in Phase 1.
+///
+/// In Phase 4, this function is replaced by loading a persisted
+/// encrypted key file bound to the identity provider. The interface
+/// at the call site does not change — only the source of the key.
+/// See spec §4 and coding standards §0.1.
+///
+/// # Arguments
+///
+/// * `passphrase` — The vault passphrase as bytes.
+/// * `salt` — The hex-decoded Argon2id salt from vault.toml.
+///
+/// # Returns
+///
+/// A deterministic [`LooMedKeypair`] derived from the passphrase.
+///
+/// # Errors
+///
+/// * [`CryptoError::KeyDerivationFailed`] — Argon2id derivation failed.
+pub fn derive_keypair(
+    passphrase: &[u8],
+    salt: &[u8],
+) -> Result<LooMedKeypair, CryptoError> {
+    // Derive 32 bytes from the passphrase using Argon2id.
+    // These bytes become the ed25519 signing key seed.
+    let key_bytes = crate::encrypt::derive_key(passphrase, salt)?;
+    let signing_key = SigningKey::from_bytes(&key_bytes);
+    let verifying_key = signing_key.verifying_key();
+
+    Ok(LooMedKeypair {
+        signing_key,
+        verifying_key,
+    })
+}
+
 /// Signs a message with the given keypair's private key.
 ///
 /// The message should be the canonical JSON serialisation of the commit

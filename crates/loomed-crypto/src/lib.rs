@@ -25,5 +25,5 @@ pub mod error;
 
 pub use error::CryptoError;
 pub use hash::{compute_commit_hash, compute_content_hash};
-pub use keys::{generate_keypair, sign, verify, LooMedKeypair};
+pub use keys::{derive_keypair, generate_keypair, sign, verify, LooMedKeypair};
 pub use encrypt::{derive_key, encrypt, decrypt};
