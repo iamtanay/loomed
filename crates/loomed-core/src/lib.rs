@@ -18,11 +18,12 @@
 //! - CLI argument parsing (see `loomed-cli`)
 //! - Network communication (future: `loomed-sync`)
 
+pub mod builder;
 pub mod commit;
 pub mod error;
 pub mod participant;
 
-// Re-export the most commonly used types at the crate root for convenience.
+pub use builder::{prepare, PendingCommit};
 pub use commit::{AuthorizationRef, Commit, CommitHash, ContentHash, RecordType, SyncMetadata, TokenId};
 pub use error::LooMedError;
 pub use participant::{ParticipantId, ParticipantType};
