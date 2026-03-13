@@ -9,6 +9,7 @@
 //! - Commit struct definition and serialisation (spec §6)
 //! - Participant identity types (spec §3)
 //! - Hash chain construction and verification (spec §7)
+//! - Record payload schemas for all six record types (spec §9)
 //! - Consent token types (spec §10)
 //! - Error taxonomy for all protocol operations
 //!
@@ -22,10 +23,17 @@ pub mod builder;
 pub mod commit;
 pub mod error;
 pub mod participant;
+pub mod payload;
 pub mod verify;
 
 pub use builder::{prepare, PendingCommit};
-pub use commit::{AuthorizationRef, Commit, CommitHash, ContentHash, RecordType, SyncMetadata, TokenId};
+pub use commit::{
+    AuthorizationRef, Commit, CommitHash, ContentHash, RecordType, SyncMetadata, TokenId,
+};
 pub use error::LooMedError;
 pub use participant::{ParticipantId, ParticipantType};
+pub use payload::{
+    DiagnosisPayload, ExternalRef, LabResultPayload, PrescriptionPayload, ProcedurePayload,
+    RadiologyReportPayload, RecordPayload, ReferenceRange, TeamMember, VaccinationPayload,
+};
 pub use verify::{verify_chain, verify_commit, ChainVerification, CommitVerification};
