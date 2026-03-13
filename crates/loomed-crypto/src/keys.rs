@@ -226,4 +226,95 @@ mod tests {
         let keypair = generate_keypair();
         assert!(keypair.public_key_hex().starts_with("ed25519:"));
     }
+
+    /// Spec §4.3 and coding standards §0.5: derive_keypair must produce the
+    /// same keypair every time when given the same passphrase and salt.
+    ///
+    /// This is the fundamental guarantee that makes loomed verify --chain
+    /// pass cleanly in Phase 1 without key persistence — the same passphrase
+    /// used during `loomed init` and `loomed commit` always produces the
+    /// same signing key, which always matches the public key in vault.toml.
+    #[test]
+    fn derive_keypair_is_deterministic() {
+        let passphrase = b"test-vault-passphrase";
+        let salt = b"randomsalt123456";
+
+        let keypair1 = derive_keypair(passphrase, salt).unwrap();
+        let keypair2 = derive_keypair(passphrase, salt).unwrap();
+
+        assert_eq!(
+            keypair1.public_key_hex(),
+            keypair2.public_key_hex(),
+            "same passphrase and salt must always produce the same public key"
+        );
+    }
+
+    /// Spec §4.3 and coding standards §0.5: derive_keypair with a different
+    /// passphrase must produce a different keypair.
+    ///
+    /// Ensures that two vaults with different passphrases cannot produce
+    /// the same signing key, even with the same salt.
+    #[test]
+    fn derive_keypair_differs_with_different_passphrase() {
+        let salt = b"randomsalt123456";
+
+        let keypair1 = derive_keypair(b"passphrase-one", salt).unwrap();
+        let keypair2 = derive_keypair(b"passphrase-two", salt).unwrap();
+
+        assert_ne!(
+            keypair1.public_key_hex(),
+            keypair2.public_key_hex(),
+            "different passphrases must produce different keypairs"
+        );
+    }
+
+    /// Spec §4.3 and coding standards §0.5: derive_keypair with a different
+    /// salt must produce a different keypair.
+    ///
+    /// Ensures that two vaults with the same passphrase but different salts
+    /// cannot produce the same signing key. The salt is generated fresh per
+    /// vault at init time — this test confirms it does its job. See spec §5.
+    #[test]
+    fn derive_keypair_differs_with_different_salt() {
+        let passphrase = b"same-passphrase";
+
+        let keypair1 = derive_keypair(passphrase, b"salt-one-16bytes").unwrap();
+        let keypair2 = derive_keypair(passphrase, b"salt-two-16bytes").unwrap();
+
+        assert_ne!(
+            keypair1.public_key_hex(),
+            keypair2.public_key_hex(),
+            "different salts must produce different keypairs even with the same passphrase"
+        );
+    }
+
+    /// Spec §4.3 and coding standards §0.5: a commit signed with a derived
+    /// keypair must verify against the public key from a separately derived
+    /// keypair using the same passphrase and salt.
+    ///
+    /// This is the end-to-end proof of the Phase 1 signing model: init
+    /// derives a keypair and stores its public key; commit derives the same
+    /// keypair and signs; verify reads the public key from vault.toml and
+    /// verifies the signature. All three steps work because derivation is
+    /// deterministic.
+    #[test]
+    fn derived_keypair_sign_and_verify_roundtrip() {
+        let passphrase = b"test-vault-passphrase";
+        let salt = b"randomsalt123456";
+        let message = b"canonical commit bytes";
+
+        // Simulate init: derive keypair, store public key
+        let init_keypair = derive_keypair(passphrase, salt).unwrap();
+        let stored_public_key = init_keypair.public_key_hex();
+
+        // Simulate commit: derive the same keypair independently, sign
+        let commit_keypair = derive_keypair(passphrase, salt).unwrap();
+        let signature = sign(&commit_keypair, message);
+
+        // Simulate verify: use stored public key to verify the signature
+        assert!(
+            verify(&stored_public_key, message, &signature).is_ok(),
+            "signature from derived keypair must verify against stored public key"
+        );
+    }
 }
