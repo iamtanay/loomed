@@ -12,6 +12,7 @@
 //! - `loomed commit`            — Sign and commit the staged record
 //! - `loomed log`               — Display the full commit history
 //! - `loomed show <commit_id>`  — Inspect a specific commit by ID
+//! - `loomed status`            — Show current vault state and staged record
 //! - `loomed verify <commit_id>` — Verify a single commit's integrity
 //! - `loomed verify --chain`    — Verify the full hash chain
 //!
@@ -44,7 +45,8 @@ enum Command {
 
     /// Stage a medical record for the next commit.
     ///
-    /// Writes the record type and message to .loomed/staged.json.
+    /// Prompts for all required (and optional) fields for the given
+    /// record type. Writes the completed record to .loomed/staged.json.
     /// Running add twice overwrites the previous staged record.
     Add {
         /// The type of medical record to stage.
@@ -79,6 +81,13 @@ enum Command {
         commit_id: String,
     },
 
+    /// Show the current vault state and staged record.
+    ///
+    /// Displays the vault owner, public key, HEAD commit, and any
+    /// record currently staged for commit. No passphrase is required —
+    /// all data shown is stored in plaintext.
+    Status,
+
     /// Verify the cryptographic integrity of the vault.
     ///
     /// Two modes:
@@ -108,6 +117,7 @@ fn main() {
         Command::Commit => commands::commit::run(),
         Command::Log => commands::log::run(),
         Command::Show { commit_id } => commands::show::run(&commit_id),
+        Command::Status => commands::status::run(),
         Command::Verify { commit_id, chain } => {
             commands::verify::run(commit_id.as_deref(), chain)
         }
