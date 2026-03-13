@@ -337,3 +337,336 @@ impl Vault {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// Integration Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loomed_core::{
+        builder, AuthorizationRef, ParticipantId, RecordType,
+    };
+    use loomed_crypto::{derive_keypair, sign};
+    use tempfile::TempDir;
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    /// Creates an isolated temporary directory for each test.
+    /// Tests must never read from or write to the real .loomed/ vault.
+    /// Per coding standards §6.2.
+    fn temp_dir() -> TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn test_patient_id() -> ParticipantId {
+        ParticipantId::new("LMP-7XKQR2MNVB-F4").unwrap()
+    }
+
+    fn test_passphrase() -> &'static [u8] {
+        b"test-passphrase-session3"
+    }
+
+    fn test_salt() -> [u8; 16] {
+        [1u8; 16]
+    }
+
+    fn test_salt_hex() -> String {
+        hex::encode(test_salt())
+    }
+
+    /// Initialises a vault in the temp dir with consistent test credentials.
+    fn init_test_vault(dir: &TempDir) -> Vault {
+        let salt = test_salt();
+        let keypair = derive_keypair(test_passphrase(), &salt).unwrap();
+        let public_key = keypair.public_key_hex();
+        Vault::init(dir.path(), &test_patient_id(), &public_key, &test_salt_hex()).unwrap()
+    }
+
+    /// Builds and writes a signed commit to an open vault.
+    ///
+    /// Returns the written commit so callers can inspect its commit_id
+    /// and chain it as the previous_hash of the next commit.
+    fn write_test_commit(
+        vault: &Vault,
+        previous_hash: Option<CommitHash>,
+        message: &str,
+        record_type: RecordType,
+    ) -> Commit {
+        let patient_id = test_patient_id();
+        let salt = test_salt();
+        let keypair = derive_keypair(test_passphrase(), &salt).unwrap();
+
+        let pending = builder::prepare(
+            patient_id.clone(),
+            patient_id.clone(),
+            patient_id,
+            record_type,
+            message.to_string(),
+            serde_json::json!({}),
+            previous_hash,
+            AuthorizationRef::SelfAuthored,
+        )
+        .unwrap();
+
+        let signature = sign(&keypair, &pending.canonical_bytes);
+        let commit = pending.finalise(signature).unwrap();
+        vault.write_commit(&commit, test_passphrase()).unwrap();
+        commit
+    }
+
+    // -----------------------------------------------------------------------
+    // Vault::init tests
+    // -----------------------------------------------------------------------
+
+    /// Spec §5: Vault::init must create the .loomed/ directory structure.
+    #[test]
+    fn init_creates_vault_directory_structure() {
+        let dir = temp_dir();
+        init_test_vault(&dir);
+
+        assert!(dir.path().join(".loomed").exists());
+        assert!(dir.path().join(".loomed").join("commits").exists());
+        assert!(dir.path().join(".loomed").join("vault.toml").exists());
+    }
+
+    /// Spec §5: Vault::init must write the correct patient_id to vault.toml.
+    #[test]
+    fn init_writes_correct_metadata() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        assert_eq!(vault.metadata.patient_id, "LMP-7XKQR2MNVB-F4");
+        assert_eq!(vault.metadata.protocol_version, "0.2");
+        assert_eq!(vault.metadata.idp_type, "passphrase");
+        assert_eq!(vault.metadata.argon2_salt, test_salt_hex());
+    }
+
+    /// Spec §5: Vault::init on an already-initialised directory must fail
+    /// with VaultAlreadyExists.
+    #[test]
+    fn init_fails_if_vault_already_exists() {
+        let dir = temp_dir();
+        init_test_vault(&dir);
+
+        let salt = test_salt();
+        let keypair = derive_keypair(test_passphrase(), &salt).unwrap();
+        let result = Vault::init(
+            dir.path(),
+            &test_patient_id(),
+            &keypair.public_key_hex(),
+            &test_salt_hex(),
+        );
+
+        assert!(matches!(result, Err(StoreError::VaultAlreadyExists { .. })));
+    }
+
+    // -----------------------------------------------------------------------
+    // Vault::open tests
+    // -----------------------------------------------------------------------
+
+    /// Spec §5: Vault::open must load the same metadata that was written
+    /// by Vault::init.
+    #[test]
+    fn open_reads_metadata_written_by_init() {
+        let dir = temp_dir();
+        init_test_vault(&dir);
+
+        let opened = Vault::open(dir.path()).unwrap();
+        assert_eq!(opened.metadata.patient_id, "LMP-7XKQR2MNVB-F4");
+        assert_eq!(opened.metadata.argon2_salt, test_salt_hex());
+    }
+
+    /// Spec §5: Vault::open on a directory with no vault must fail
+    /// with VaultNotFound.
+    #[test]
+    fn open_fails_if_vault_does_not_exist() {
+        let dir = temp_dir();
+        let result = Vault::open(dir.path());
+        assert!(matches!(result, Err(StoreError::VaultNotFound { .. })));
+    }
+
+    // -----------------------------------------------------------------------
+    // write_commit / read_commit tests
+    // -----------------------------------------------------------------------
+
+    /// Spec §6: A commit written with write_commit must be readable and
+    /// identical after read_commit decrypts it.
+    #[test]
+    fn write_and_read_commit_roundtrip() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let written = write_test_commit(&vault, None, "vault initialised", RecordType::KeyRotation);
+        let read_back = vault
+            .read_commit(&written.commit_id, test_passphrase())
+            .unwrap();
+
+        assert_eq!(written.commit_id, read_back.commit_id);
+        assert_eq!(written.message, read_back.message);
+        assert_eq!(written.patient_id, read_back.patient_id);
+        assert_eq!(written.signature, read_back.signature);
+    }
+
+    /// Spec §6: read_commit with the wrong passphrase must fail with
+    /// DecryptionFailed.
+    #[test]
+    fn read_commit_with_wrong_passphrase_fails() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let commit = write_test_commit(&vault, None, "vault initialised", RecordType::KeyRotation);
+        let result = vault.read_commit(&commit.commit_id, b"wrong-passphrase");
+
+        assert!(matches!(result, Err(StoreError::DecryptionFailed { .. })));
+    }
+
+    /// Spec §6: read_commit for a commit_id that does not exist on disk
+    /// must fail with CommitReadFailed.
+    #[test]
+    fn read_commit_missing_file_fails() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let nonexistent = CommitHash("sha256:000000000000000000000000000000000000000000000000000000000000dead".to_string());
+        let result = vault.read_commit(&nonexistent, test_passphrase());
+
+        assert!(matches!(result, Err(StoreError::CommitReadFailed { .. })));
+    }
+
+    // -----------------------------------------------------------------------
+    // read_head tests
+    // -----------------------------------------------------------------------
+
+    /// Spec §5: read_head on a vault with no commits must return None.
+    #[test]
+    fn read_head_returns_none_on_empty_vault() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let head = vault.read_head().unwrap();
+        assert!(head.is_none());
+    }
+
+    /// Spec §6: read_head must return the commit_id of the most recently
+    /// written commit.
+    #[test]
+    fn read_head_returns_latest_commit_id() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let first = write_test_commit(&vault, None, "genesis", RecordType::KeyRotation);
+        let second = write_test_commit(
+            &vault,
+            Some(first.commit_id.clone()),
+            "lab result",
+            RecordType::LabResult,
+        );
+
+        let head = vault.read_head().unwrap().unwrap();
+        assert_eq!(head, second.commit_id);
+    }
+
+    // -----------------------------------------------------------------------
+    // list_commit_ids tests
+    // -----------------------------------------------------------------------
+
+    /// Spec §5: list_commit_ids must return one entry per written commit.
+    #[test]
+    fn list_commit_ids_returns_all_commits() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let first = write_test_commit(&vault, None, "genesis", RecordType::KeyRotation);
+        let second = write_test_commit(
+            &vault,
+            Some(first.commit_id.clone()),
+            "lab result",
+            RecordType::LabResult,
+        );
+
+        let ids = vault.list_commit_ids().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&first.commit_id));
+        assert!(ids.contains(&second.commit_id));
+    }
+
+    /// Spec §5: list_commit_ids on a vault with no commits must return
+    /// an empty list, not an error.
+    #[test]
+    fn list_commit_ids_returns_empty_on_fresh_vault() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        let ids = vault.list_commit_ids().unwrap();
+        assert!(ids.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Full lifecycle integration test
+    // -----------------------------------------------------------------------
+
+    /// Spec §6 and §7: Full vault lifecycle — init, write genesis, write two
+    /// more commits, traverse chain from HEAD to genesis, verify all links.
+    ///
+    /// This is the integration test equivalent of the end-to-end CLI flow
+    /// verified manually in Session 2.
+    #[test]
+    fn full_vault_lifecycle_chain_traversal() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        // Write three commits forming a chain
+        let genesis = write_test_commit(
+            &vault,
+            None,
+            "vault initialised",
+            RecordType::KeyRotation,
+        );
+        let second = write_test_commit(
+            &vault,
+            Some(genesis.commit_id.clone()),
+            "fasting blood glucose",
+            RecordType::LabResult,
+        );
+        let third = write_test_commit(
+            &vault,
+            Some(second.commit_id.clone()),
+            "type 2 diabetes",
+            RecordType::Diagnosis,
+        );
+
+        // HEAD must point to the last commit
+        let head = vault.read_head().unwrap().unwrap();
+        assert_eq!(head, third.commit_id);
+
+        // Traverse from HEAD to genesis via previous_hash
+        let mut chain = Vec::new();
+        let mut current = Some(head);
+        while let Some(id) = current {
+            let commit = vault.read_commit(&id, test_passphrase()).unwrap();
+            let prev = commit.previous_hash.clone();
+            chain.push(commit);
+            current = prev;
+        }
+
+        // Chain traversal must visit all three commits
+        assert_eq!(chain.len(), 3);
+
+        // Traversal order is HEAD → genesis, so reverse for genesis-first order
+        chain.reverse();
+
+        // Verify chain linkage is correct
+        assert!(chain[0].previous_hash.is_none()); // genesis has no parent
+        assert_eq!(chain[1].previous_hash.as_ref().unwrap(), &chain[0].commit_id);
+        assert_eq!(chain[2].previous_hash.as_ref().unwrap(), &chain[1].commit_id);
+
+        // All commit_ids must have the correct prefix
+        for commit in &chain {
+            assert!(commit.commit_id.as_str().starts_with("sha256:"));
+        }
+    }
+}
