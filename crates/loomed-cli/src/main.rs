@@ -7,11 +7,12 @@
 //! library functions, and prints results to the terminal.
 //!
 //! ## Available Commands (Phase 1)
-//! - `loomed init`           — Initialise a new patient vault
-//! - `loomed add`            — Stage a record for commit
-//! - `loomed commit`         — Sign and commit the staged record
-//! - `loomed log`            — Display the full commit history
-//! - `loomed verify --chain` — Verify the full hash chain
+//! - `loomed init`              — Initialise a new patient vault
+//! - `loomed add`               — Stage a record for commit
+//! - `loomed commit`            — Sign and commit the staged record
+//! - `loomed log`               — Display the full commit history
+//! - `loomed show <commit_id>`  — Inspect a specific commit by ID
+//! - `loomed verify --chain`    — Verify the full hash chain
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
 
@@ -66,6 +67,17 @@ enum Command {
     /// Display the full commit history from HEAD to genesis.
     Log,
 
+    /// Inspect a specific commit by its commit_id.
+    ///
+    /// Displays every field of the commit in a readable format.
+    /// Use `loomed verify <commit_id>` to check its cryptographic integrity.
+    Show {
+        /// The commit_id to inspect, including the sha256: prefix.
+        ///
+        /// Example: loomed show sha256:7f8e21a4b3c2d1e0f9a8b7c6d5e4f3a2...
+        commit_id: String,
+    },
+
     /// Verify the integrity of the vault.
     Verify {
         /// Verify the full hash chain from genesis to HEAD.
@@ -82,6 +94,7 @@ fn main() {
         Command::Add { r#type, message } => commands::add::run(&r#type, &message),
         Command::Commit => commands::commit::run(),
         Command::Log => commands::log::run(),
+        Command::Show { commit_id } => commands::show::run(&commit_id),
         Command::Verify { chain } => commands::verify::run(chain),
     };
 
