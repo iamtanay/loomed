@@ -12,6 +12,7 @@
 //! - `loomed commit`            — Sign and commit the staged record
 //! - `loomed log`               — Display the full commit history
 //! - `loomed show <commit_id>`  — Inspect a specific commit by ID
+//! - `loomed verify <commit_id>` — Verify a single commit's integrity
 //! - `loomed verify --chain`    — Verify the full hash chain
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
@@ -78,9 +79,21 @@ enum Command {
         commit_id: String,
     },
 
-    /// Verify the integrity of the vault.
+    /// Verify the cryptographic integrity of the vault.
+    ///
+    /// Two modes:
+    ///   loomed verify <commit_id>  — verify a single commit by ID
+    ///   loomed verify --chain      — verify the full hash chain from genesis
     Verify {
+        /// The commit_id of a single commit to verify.
+        ///
+        /// Mutually exclusive with --chain.
+        /// Example: loomed verify sha256:7f8e21a4b3c2d1e0f9a8b7c6d5e4f3a2...
+        commit_id: Option<String>,
+
         /// Verify the full hash chain from genesis to HEAD.
+        ///
+        /// Mutually exclusive with <commit_id>.
         #[arg(long)]
         chain: bool,
     },
@@ -95,7 +108,9 @@ fn main() {
         Command::Commit => commands::commit::run(),
         Command::Log => commands::log::run(),
         Command::Show { commit_id } => commands::show::run(&commit_id),
-        Command::Verify { chain } => commands::verify::run(chain),
+        Command::Verify { commit_id, chain } => {
+            commands::verify::run(commit_id.as_deref(), chain)
+        }
     };
 
     if let Err(e) = result {
