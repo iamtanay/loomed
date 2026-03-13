@@ -19,8 +19,9 @@
 //! coding standards §7.1.
 //!
 //! ## Optional Fields
-//! Fields that may be absent are `Option<T>`. No empty strings or
-//! sentinel values are used as substitutes for absent data.
+//! Fields that may be absent are `Option<T>` with
+//! `#[serde(skip_serializing_if = "Option::is_none")]`. Absent optional
+//! fields are omitted from JSON entirely — never serialised as null.
 //! See coding standards §7.2.
 
 use serde::{Deserialize, Serialize};
@@ -144,13 +145,15 @@ pub struct LabResultPayload {
     /// The LooMed participant ID of the diagnostic device that produced
     /// this result, if known.
     ///
-    /// Format: `LMV-<scope>-<id>-<checksum>`. `None` if the device is
+    /// Format: `LMV-<scope>-<id>-<checksum>`. Absent if the device is
     /// unregistered or unknown. See spec §9.1 and §3.1.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
 
     /// Additional clinical notes about this result.
     ///
     /// Example: `"patient fasted for 10 hours prior"`. See spec §9.1.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
 
@@ -198,7 +201,8 @@ pub struct PrescriptionPayload {
 
     /// The number of refills permitted after the initial dispensing.
     ///
-    /// `None` if no refills are permitted. See spec §9.2.
+    /// Absent if no refills are permitted. See spec §9.2.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refills: Option<u32>,
 
     /// The clinical reason for this prescription.
@@ -208,8 +212,9 @@ pub struct PrescriptionPayload {
 
     /// The commit_id of the diagnosis that prompted this prescription.
     ///
-    /// Format: `"sha256:<hex>"`. `None` if not linked to a specific
+    /// Format: `"sha256:<hex>"`. Absent if not linked to a specific
     /// diagnosis commit. See spec §9.2.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnosis_ref: Option<String>,
 }
 
@@ -260,8 +265,9 @@ pub struct RadiologyReportPayload {
 
     /// The participant ID of the imaging machine that produced the study.
     ///
-    /// Format: `LMV-<scope>-<id>-<checksum>`. `None` if the machine is
+    /// Format: `LMV-<scope>-<id>-<checksum>`. Absent if the machine is
     /// unregistered. See spec §9.3 and §3.1.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
 
     /// A reference to the raw imaging files held by the originating institution.
@@ -323,20 +329,23 @@ pub struct VaccinationPayload {
 
     /// The recommended date for the next dose, if applicable.
     ///
-    /// ISO 8601 date string (`YYYY-MM-DD`). `None` if this is the final
+    /// ISO 8601 date string (`YYYY-MM-DD`). Absent if this is the final
     /// dose or if no follow-up dose is scheduled. See spec §9.4.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_dose_due: Option<String>,
 
     /// The name of the vaccination programme under which this dose was given.
     ///
-    /// Example: `"National COVID-19 Vaccination Drive"`. `None` for
+    /// Example: `"National COVID-19 Vaccination Drive"`. Absent for
     /// privately administered vaccines. See spec §9.4.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub programme: Option<String>,
 
     /// The LooMed programme identifier, if the programme is registered.
     ///
-    /// Example: `"LMG-GOV-COWIN-2021"`. `None` for unregistered or
+    /// Example: `"LMG-GOV-COWIN-2021"`. Absent for unregistered or
     /// private programmes. See spec §9.4.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub programme_id: Option<String>,
 }
 
@@ -383,6 +392,7 @@ pub struct DiagnosisPayload {
     /// Additional clinical notes about this diagnosis.
     ///
     /// Narrative text from the diagnosing clinician. See spec §9.5.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 
     /// Commit IDs of records that support or evidence this diagnosis.
@@ -440,6 +450,7 @@ pub struct ProcedurePayload {
     /// Additional clinical notes about the procedure.
     ///
     /// Narrative text from the operating clinician. See spec §9.6.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 
     /// The clinical team present during the procedure.
@@ -450,8 +461,9 @@ pub struct ProcedurePayload {
 
     /// The commit_id of the diagnosis that prompted this procedure.
     ///
-    /// Format: `"sha256:<hex>"`. `None` if not linked to a specific
+    /// Format: `"sha256:<hex>"`. Absent if not linked to a specific
     /// diagnosis commit. See spec §9.6.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnosis_ref: Option<String>,
 }
 
@@ -499,6 +511,7 @@ impl RecordPayload {
     ///
     /// The returned `Value` is what gets stored in `Commit.payload` on disk.
     /// It is always a JSON object whose fields match spec §9 exactly.
+    /// Optional fields that are `None` are omitted from the output entirely.
     ///
     /// # Errors
     ///
@@ -565,6 +578,25 @@ mod tests {
         assert_eq!(payload, back);
     }
 
+    /// Spec §9.1: Optional fields must be absent from JSON when None —
+    /// not serialised as null. See coding standards §7.2.
+    #[test]
+    fn lab_result_optional_fields_absent_when_none() {
+        let payload = LabResultPayload {
+            test_name: "FBG".to_string(),
+            test_code: "FBG".to_string(),
+            value: 98.0,
+            unit: "mg/dL".to_string(),
+            reference_range: ReferenceRange { min: 70.0, max: 99.0 },
+            status: "normal".to_string(),
+            device_id: None,
+            notes: None,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert!(value.get("device_id").is_none(), "device_id must be absent when None");
+        assert!(value.get("notes").is_none(), "notes must be absent when None");
+    }
+
     /// Spec §9.1: LabResultPayload field names must match the spec exactly.
     #[test]
     fn lab_result_payload_field_names_match_spec() {
@@ -605,6 +637,25 @@ mod tests {
         let json = serde_json::to_string(&payload).unwrap();
         let back: PrescriptionPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(payload, back);
+    }
+
+    /// Spec §9.2: Optional fields must be absent from JSON when None.
+    #[test]
+    fn prescription_optional_fields_absent_when_none() {
+        let payload = PrescriptionPayload {
+            drug_name: "Metformin".to_string(),
+            drug_code: "MET500".to_string(),
+            dosage: "500mg".to_string(),
+            frequency: "twice daily".to_string(),
+            duration_days: 30,
+            instructions: "take with meals".to_string(),
+            refills: None,
+            reason: "type 2 diabetes management".to_string(),
+            diagnosis_ref: None,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert!(value.get("refills").is_none(), "refills must be absent when None");
+        assert!(value.get("diagnosis_ref").is_none(), "diagnosis_ref must be absent when None");
     }
 
     // -----------------------------------------------------------------------
@@ -656,6 +707,7 @@ mod tests {
         };
         let value = serde_json::to_value(&payload).unwrap();
         assert!(value.get("external_ref").is_some());
+        assert!(value.get("machine_id").is_none(), "machine_id must be absent when None");
     }
 
     // -----------------------------------------------------------------------
@@ -680,6 +732,27 @@ mod tests {
         let json = serde_json::to_string(&payload).unwrap();
         let back: VaccinationPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(payload, back);
+    }
+
+    /// Spec §9.4: Optional fields must be absent from JSON when None.
+    #[test]
+    fn vaccination_optional_fields_absent_when_none() {
+        let payload = VaccinationPayload {
+            vaccine_name: "Covishield".to_string(),
+            vaccine_code: "AZ-COV19".to_string(),
+            manufacturer: "Serum Institute of India".to_string(),
+            batch_number: "SII-2021-B0041".to_string(),
+            dose_number: 1,
+            total_doses: 2,
+            site: "left deltoid".to_string(),
+            next_dose_due: None,
+            programme: None,
+            programme_id: None,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert!(value.get("next_dose_due").is_none());
+        assert!(value.get("programme").is_none());
+        assert!(value.get("programme_id").is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -716,6 +789,22 @@ mod tests {
         let payload: DiagnosisPayload = serde_json::from_str(json).unwrap();
         assert!(payload.supporting_refs.is_empty());
         assert!(payload.notes.is_none());
+    }
+
+    /// Spec §9.5: notes must be absent from JSON when None.
+    #[test]
+    fn diagnosis_optional_fields_absent_when_none() {
+        let payload = DiagnosisPayload {
+            condition: "Hypertension".to_string(),
+            icd_code: "I10".to_string(),
+            severity: "mild".to_string(),
+            onset: "2026-01-01".to_string(),
+            status: "active".to_string(),
+            notes: None,
+            supporting_refs: vec![],
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert!(value.get("notes").is_none(), "notes must be absent when None");
     }
 
     // -----------------------------------------------------------------------
@@ -767,6 +856,25 @@ mod tests {
         assert!(payload.diagnosis_ref.is_none());
     }
 
+    /// Spec §9.6: Optional fields must be absent from JSON when None.
+    #[test]
+    fn procedure_optional_fields_absent_when_none() {
+        let payload = ProcedurePayload {
+            procedure_name: "Appendectomy".to_string(),
+            procedure_code: "47.09".to_string(),
+            procedure_type: "surgical".to_string(),
+            anaesthesia: "general".to_string(),
+            duration_minutes: 45,
+            outcome: "successful".to_string(),
+            notes: None,
+            team: vec![],
+            diagnosis_ref: None,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert!(value.get("notes").is_none(), "notes must be absent when None");
+        assert!(value.get("diagnosis_ref").is_none(), "diagnosis_ref must be absent when None");
+    }
+
     // -----------------------------------------------------------------------
     // RecordPayload dispatch
     // -----------------------------------------------------------------------
@@ -787,6 +895,7 @@ mod tests {
         let value = lab.to_value().unwrap();
         assert!(value.is_object());
         assert!(value.get("test_name").is_some());
+        assert!(value.get("device_id").is_none(), "absent optional must not appear in output");
 
         let diagnosis = RecordPayload::Diagnosis(DiagnosisPayload {
             condition: "Hypertension".to_string(),
@@ -800,5 +909,6 @@ mod tests {
         let value = diagnosis.to_value().unwrap();
         assert!(value.is_object());
         assert!(value.get("icd_code").is_some());
+        assert!(value.get("notes").is_none(), "absent optional must not appear in output");
     }
 }

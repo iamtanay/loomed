@@ -7,14 +7,15 @@
 //! library functions, and prints results to the terminal.
 //!
 //! ## Available Commands (Phase 1)
-//! - `loomed init`              — Initialise a new patient vault
-//! - `loomed add`               — Stage a record for commit
-//! - `loomed commit`            — Sign and commit the staged record
-//! - `loomed log`               — Display the full commit history
-//! - `loomed show <commit_id>`  — Inspect a specific commit by ID
-//! - `loomed status`            — Show current vault state and staged record
+//! - `loomed init`               — Initialise a new patient vault
+//! - `loomed add`                — Stage a record for commit (empty payload)
+//! - `loomed add -i`             — Stage a record with interactive payload prompts
+//! - `loomed commit`             — Sign and commit the staged record
+//! - `loomed log`                — Display the full commit history
+//! - `loomed show <commit_id>`   — Inspect a specific commit by ID
+//! - `loomed status`             — Show current vault state and staged record
 //! - `loomed verify <commit_id>` — Verify a single commit's integrity
-//! - `loomed verify --chain`    — Verify the full hash chain
+//! - `loomed verify --chain`     — Verify the full hash chain
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
 
@@ -45,8 +46,13 @@ enum Command {
 
     /// Stage a medical record for the next commit.
     ///
-    /// Prompts for all required (and optional) fields for the given
-    /// record type. Writes the completed record to .loomed/staged.json.
+    /// Without -i: stages the record type and message with an empty payload.
+    /// This is the default scriptable path — no prompts, no interaction.
+    ///
+    /// With -i: prompts for all required and optional payload fields for
+    /// the given record type per spec §9. Required fields loop until valid
+    /// input is provided. Optional fields accept an empty Enter to skip.
+    ///
     /// Running add twice overwrites the previous staged record.
     Add {
         /// The type of medical record to stage.
@@ -59,6 +65,13 @@ enum Command {
         /// A short description of this record (becomes the commit message).
         #[arg(long, short = 'm')]
         message: String,
+
+        /// Enable interactive payload prompts for this record type.
+        ///
+        /// Prompts for all required and optional fields defined in spec §9.
+        /// Without this flag, the record is staged with an empty payload.
+        #[arg(short = 'i', long = "interactive", default_value_t = false)]
+        interactive: bool,
     },
 
     /// Sign and commit the currently staged record.
@@ -113,7 +126,9 @@ fn main() {
 
     let result = match cli.command {
         Command::Init => commands::init::run(),
-        Command::Add { r#type, message } => commands::add::run(&r#type, &message),
+        Command::Add { r#type, message, interactive } => {
+            commands::add::run(&r#type, &message, interactive)
+        }
         Command::Commit => commands::commit::run(),
         Command::Log => commands::log::run(),
         Command::Show { commit_id } => commands::show::run(&commit_id),
