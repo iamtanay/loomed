@@ -17,3 +17,5 @@ Thumbs.db
 
 # macOS metadata
 .DS_Store
+
+*.ps1

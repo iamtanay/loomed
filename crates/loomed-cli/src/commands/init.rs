@@ -158,14 +158,23 @@ fn prompt_participant_id() -> Result<ParticipantId, Box<dyn std::error::Error>> 
 
 /// Prompts the user to enter and confirm a vault passphrase.
 ///
-/// The passphrase is read without echoing characters to the terminal
-/// via `rpassword`. Enforces a minimum length of 8 characters.
+/// The passphrase is read without echoing characters to the terminal via
+/// [`super::read_passphrase`]. When `LOOMED_PASSPHRASE` is set, the
+/// confirmation check is skipped — the env var value is used directly.
+/// Enforces a minimum length of 8 characters in interactive mode.
 /// Loops until both entries match and the length requirement is met.
 ///
 /// # Errors
 ///
 /// Returns an error only if the terminal I/O fails.
 fn prompt_passphrase() -> Result<String, Box<dyn std::error::Error>> {
+    // When LOOMED_PASSPHRASE is set (non-interactive / test mode), read it
+    // once and return immediately — no confirmation prompt, no length check.
+    // The caller is responsible for supplying a valid passphrase.
+    if let Ok(p) = std::env::var("LOOMED_PASSPHRASE") {
+        return Ok(p);
+    }
+
     loop {
         let passphrase = rpassword::prompt_password("enter vault passphrase: ")?;
         let confirm = rpassword::prompt_password("confirm vault passphrase: ")?;

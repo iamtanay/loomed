@@ -44,8 +44,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let staged = read_staged(&vault_dir)?
         .ok_or("nothing staged. run `loomed add --type <type> -m \"message\"` first.")?;
 
-    // Step 3 — Prompt for passphrase
-    let passphrase = rpassword::prompt_password("vault passphrase: ")?;
+    // Step 3 — Prompt for passphrase via the shared helper.
+    //
+    // In interactive use this prompts the terminal via rpassword.
+    // When LOOMED_PASSPHRASE is set the env var value is used directly.
+    // See commands::read_passphrase and coding standards §0.6.
+    let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
     // Step 4 — Read current HEAD to determine previous_hash

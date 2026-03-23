@@ -49,10 +49,12 @@ pub fn run(commit_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Step 2 — Open the vault. Fails with a clear error if not initialised.
     let vault = Vault::open(&current_dir)?;
 
-    // Step 3 — Prompt for passphrase only after all preconditions pass.
-    // Per coding standards §0.6: credentials are never requested before
-    // we know there is work to do.
-    let passphrase = rpassword::prompt_password("vault passphrase: ")?;
+    // Step 3 — Prompt for passphrase via the shared helper.
+    //
+    // In interactive use this prompts the terminal via rpassword.
+    // When LOOMED_PASSPHRASE is set the env var value is used directly.
+    // See commands::read_passphrase and coding standards §0.6.
+    let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
     // Step 4 — Read and decrypt the specific commit file.

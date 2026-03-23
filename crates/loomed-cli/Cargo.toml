@@ -21,3 +21,8 @@ clap = { workspace = true }
 rpassword = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }

@@ -101,9 +101,12 @@ fn verify_single(commit_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let current_dir = env::current_dir()?;
     let vault = Vault::open(&current_dir)?;
 
-    // Step 3 — Prompt for passphrase only after all preconditions pass.
-    // Per coding standards §0.6.
-    let passphrase = rpassword::prompt_password("vault passphrase: ")?;
+    // Step 3 — Prompt for passphrase via the shared helper.
+    //
+    // In interactive use this prompts the terminal via rpassword.
+    // When LOOMED_PASSPHRASE is set the env var value is used directly.
+    // See commands::read_passphrase and coding standards §0.6.
+    let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
     // Step 4 — Read and decrypt the commit
@@ -178,8 +181,12 @@ fn verify_full_chain() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Step 3 — Prompt for passphrase
-    let passphrase = rpassword::prompt_password("vault passphrase: ")?;
+    // Step 3 — Prompt for passphrase via the shared helper.
+    //
+    // In interactive use this prompts the terminal via rpassword.
+    // When LOOMED_PASSPHRASE is set the env var value is used directly.
+    // See commands::read_passphrase and coding standards §0.6.
+    let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
     // Step 4 — Traverse the chain from HEAD to genesis

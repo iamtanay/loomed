@@ -4,9 +4,10 @@
 //!
 //! ## What this command does
 //! 1. Opens the vault in the current directory
-//! 2. Prompts for the vault passphrase
-//! 3. Reads HEAD and traverses the chain backwards via previous_hash
-//! 4. Prints each commit in reverse chronological order (newest first)
+//! 2. Checks HEAD before prompting for passphrase
+//! 3. Prompts for the vault passphrase
+//! 4. Reads HEAD and traverses the chain backwards via previous_hash
+//! 5. Prints each commit in reverse chronological order (newest first)
 //!
 //! ## What it does NOT do
 //! - Verify signatures or hashes (use `loomed verify --chain` for that)
@@ -29,15 +30,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Step 1 — Open the vault
     let vault = Vault::open(&current_dir)?;
 
-    // Step 2 — Check HEAD before prompting passphrase
+    // Step 2 — Check HEAD before prompting passphrase.
+    // Per coding standards §0.6: fail fast before credentials.
     let head = vault.read_head()?;
     if head.is_none() {
         println!("no commits yet.");
         return Ok(());
     }
 
-    // Step 3 — Prompt for passphrase
-    let passphrase = rpassword::prompt_password("vault passphrase: ")?;
+    // Step 3 — Prompt for passphrase via the shared helper.
+    //
+    // In interactive use this prompts the terminal via rpassword.
+    // When LOOMED_PASSPHRASE is set the env var value is used directly.
+    // See commands::read_passphrase and coding standards §0.6.
+    let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
     // Step 4 — Traverse the chain from HEAD to genesis
@@ -54,10 +60,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Step 5 — Print commits (already in reverse chronological order)
     println!();
     for commit in &commits {
-        println!(
-            "commit  {}",
-            commit.commit_id.as_str()
-        );
+        println!("commit  {}", commit.commit_id.as_str());
         println!(
             "type    {}",
             serde_json::to_string(&commit.record_type)
