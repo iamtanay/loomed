@@ -24,11 +24,21 @@
 //!   passphrase is supplied via `LOOMED_PASSPHRASE` — the confirmation prompt
 //!   is skipped automatically in non-interactive mode.
 //!
+//! - `loomed add -i` interactive payload tests feed all required field values
+//!   through `write_stdin()`. The stdin sequences exactly match the prompt
+//!   order in `crates/loomed-cli/src/commands/prompts.rs`. Optional fields
+//!   are skipped by sending an empty line.
+//!
 //! - Tests are ordered from simplest (no vault) to most complex (full
 //!   lifecycle). Each test is independent — no shared mutable state.
 //!
 //! - Test names state the protocol rule or behaviour being verified, not
 //!   implementation details. See coding standards §6.1.
+//!
+//! ## Test Coverage
+//!
+//! init (3), status (4), add (5), add -i (7), commit (5), log (3),
+//! show (6), verify (8), full lifecycle (1) — 43 tests total.
 //!
 //! See spec §20 and coding standards §6.
 
@@ -1080,4 +1090,365 @@ fn full_lifecycle_init_add_commit_log_show_verify() {
         .success()
         .stdout(predicate::str::contains("chain ok"))
         .stdout(predicate::str::contains("3 commit(s) verified"));
+}
+
+// ---------------------------------------------------------------------------
+// `loomed add -i` interactive payload tests — spec §9
+// ---------------------------------------------------------------------------
+//
+// Each test stages a fully typed record via interactive prompts, feeding the
+// required field values through stdin with write_stdin(). Optional fields are
+// skipped by sending an empty line.
+//
+// The stdin sequences are derived directly from the prompt order in
+// crates/loomed-cli/src/commands/prompts.rs. Required fields are listed
+// with a `*` marker there; optional fields accept an empty Enter.
+
+/// Spec §9.1: `loomed add -i` with type `lab_result` must stage a typed
+/// payload containing all required fields and succeed.
+#[test]
+fn add_interactive_lab_result_stages_typed_payload() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Prompt order (from prompts::prompt_lab_result):
+    //   test_name*, test_code*, value*, unit*, ref_min*, ref_max*,
+    //   status*, device_id (opt), notes (opt)
+    let stdin = "Fasting Blood Glucose\nFBG\n98.5\nmg/dL\n70\n99\nnormal\n\n\n";
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lab_result"))
+        .stdout(predicate::str::contains("fasting glucose"));
+
+    // Status must reflect the staged payload is non-empty
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fasting Blood Glucose"));
+}
+
+/// Spec §9.2: `loomed add -i` with type `prescription` must stage a typed
+/// payload containing all required fields and succeed.
+#[test]
+fn add_interactive_prescription_stages_typed_payload() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Prompt order (from prompts::prompt_prescription):
+    //   drug_name*, drug_code*, dosage*, frequency*, duration_days*,
+    //   instructions*, reason*, refills (opt u32), diagnosis_ref (opt)
+    let stdin = "Metformin\nMET500\n500mg\ntwice daily\n30\ntake with meals\ntype 2 diabetes\n\n\n";
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "prescription", "-m", "metformin 500mg", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("prescription"))
+        .stdout(predicate::str::contains("metformin 500mg"));
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Metformin"));
+}
+
+/// Spec §9.3: `loomed add -i` with type `radiology_report` must stage a typed
+/// payload including the mandatory external_ref block and succeed.
+///
+/// Raw imaging files are never stored in LooMed. The external_ref is
+/// required, not optional. See spec §9.3 and §9.7.
+#[test]
+fn add_interactive_radiology_report_stages_typed_payload() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Prompt order (from prompts::prompt_radiology_report):
+    //   report_id*, modality*, body_part*, findings*, impression*,
+    //   radiologist_id*, machine_id (opt),
+    //   then external_ref: ref_id*, ref_type*, custodian_id*, description*, retrieval*
+    let stdin = concat!(
+        "APL-RAD-2026-00421\n",   // report_id
+        "MRI\n",                   // modality
+        "lumbar spine\n",          // body_part
+        "Mild disc bulge at L4-L5\n", // findings
+        "Grade 1 spondylolisthesis\n", // impression
+        "LMD-APL-9XKZR4WQNB-3F\n",   // radiologist_id
+        "\n",                       // machine_id (skip)
+        "APL-RAD-2026-00421\n",   // ref_id
+        "pacs_imaging\n",          // ref_type
+        "LMI-APL-2MVZK9QXBT-C2\n", // custodian_id
+        "raw MRI DICOM files\n",   // description
+        "contact custodian with ref_id\n", // retrieval
+    );
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "radiology_report", "-m", "lumbar spine MRI", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("radiology_report"))
+        .stdout(predicate::str::contains("lumbar spine MRI"));
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("APL-RAD-2026-00421"));
+}
+
+/// Spec §9.4: `loomed add -i` with type `vaccination` must stage a typed
+/// payload containing all required fields and succeed.
+#[test]
+fn add_interactive_vaccination_stages_typed_payload() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Prompt order (from prompts::prompt_vaccination):
+    //   vaccine_name*, vaccine_code*, manufacturer*, batch_number*,
+    //   dose_number*, total_doses*, site*,
+    //   next_dose_due (opt), programme (opt), programme_id (opt)
+    let stdin = concat!(
+        "Covishield\n",
+        "AZ-COV19\n",
+        "Serum Institute of India\n",
+        "SII-2021-B0041\n",
+        "1\n",
+        "2\n",
+        "left deltoid\n",
+        "\n", // next_dose_due (skip)
+        "\n", // programme (skip)
+        "\n", // programme_id (skip)
+    );
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "vaccination", "-m", "COVID-19 dose 1", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vaccination"))
+        .stdout(predicate::str::contains("COVID-19 dose 1"));
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Covishield"));
+}
+
+/// Spec §9.5: `loomed add -i` with type `diagnosis` must stage a typed
+/// payload with condition, ICD code, and supporting metadata.
+#[test]
+fn add_interactive_diagnosis_stages_typed_payload() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Prompt order (from prompts::prompt_diagnosis):
+    //   condition*, icd_code*, severity*, onset*, status*, notes (opt),
+    //   then supporting_refs (one per line, empty to end)
+    let stdin = concat!(
+        "Type 2 Diabetes Mellitus\n",
+        "E11\n",
+        "mild\n",
+        "2026-02-01\n",
+        "active\n",
+        "\n", // notes (skip)
+        "\n", // supporting_refs (end list immediately)
+    );
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "diagnosis", "-m", "type 2 diabetes", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("diagnosis"))
+        .stdout(predicate::str::contains("type 2 diabetes"));
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Type 2 Diabetes Mellitus"));
+}
+
+/// Spec §9.6: `loomed add -i` with type `procedure` must stage a typed
+/// payload with all required fields and succeed.
+#[test]
+fn add_interactive_procedure_stages_typed_payload() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Prompt order (from prompts::prompt_procedure):
+    //   procedure_name*, procedure_code*, procedure_type*, anaesthesia*,
+    //   duration_minutes*, outcome*, notes (opt), diagnosis_ref (opt),
+    //   then team members (role + participant_id pairs, empty role to finish)
+    let stdin = concat!(
+        "Appendectomy\n",
+        "47.09\n",
+        "surgical\n",
+        "general\n",
+        "45\n",
+        "successful\n",
+        "\n", // notes (skip)
+        "\n", // diagnosis_ref (skip)
+        "\n", // team role (end team list immediately)
+    );
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "procedure", "-m", "appendectomy", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("procedure"))
+        .stdout(predicate::str::contains("appendectomy"));
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Appendectomy"));
+}
+
+/// Spec §9.1, §0.6 (coding standards): A required field that receives an
+/// empty line must trigger a validation message and loop until a valid value
+/// is provided. The command must still succeed when valid input follows.
+#[test]
+fn add_interactive_required_field_loops_until_valid_input_provided() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Send an empty line first for test_name — this should trigger the
+    // "is required" message and loop. Then send the real value and all
+    // subsequent required fields.
+    let stdin = "\nFasting Blood Glucose\nFBG\n98.5\nmg/dL\n70\n99\nnormal\n\n\n";
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "test validation", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        // The "is required" message is printed to stdout by prompt_required()
+        .stdout(predicate::str::contains("is required — please enter a value."));
+}
+
+/// Spec §9.1, §6.2, §20: `loomed show` must display typed payload fields
+/// with labelled formatting for a commit staged via `loomed add -i`.
+///
+/// This is the end-to-end proof that the typed payload display works:
+/// add interactively → commit → show → see labelled fields, not raw JSON.
+#[test]
+fn show_displays_typed_payload_fields_after_interactive_add() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Stage a lab_result with a full interactive payload
+    let stdin = "Fasting Blood Glucose\nFBG\n98.5\nmg/dL\n70\n99\nnormal\n\n\n";
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose", "-i"])
+        .write_stdin(stdin)
+        .assert()
+        .success();
+
+    // Commit the staged record
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("commit")
+        .assert()
+        .success();
+
+    let commit_id = read_head(&dir);
+
+    // Show must display typed labelled fields, not raw JSON
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["show", &commit_id])
+        .assert()
+        .success()
+        // Section header still present
+        .stdout(predicate::str::contains("payload"))
+        // Typed field labels — these only appear with typed display
+        .stdout(predicate::str::contains("test_name:"))
+        .stdout(predicate::str::contains("test_code:"))
+        .stdout(predicate::str::contains("ref_range:"))
+        .stdout(predicate::str::contains("status:"))
+        // Actual field values from the interactive input
+        .stdout(predicate::str::contains("Fasting Blood Glucose"))
+        .stdout(predicate::str::contains("FBG"))
+        .stdout(predicate::str::contains("98.5"))
+        .stdout(predicate::str::contains("mg/dL"))
+        .stdout(predicate::str::contains("normal"));
+}
+
+/// Spec §9: `loomed show` for a commit staged without `-i` (empty payload)
+/// must display the "empty payload" note rather than an empty JSON block.
+#[test]
+fn show_displays_empty_payload_note_for_non_interactive_add() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "test without -i"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("commit")
+        .assert()
+        .success();
+
+    let commit_id = read_head(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["show", &commit_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("payload"))
+        .stdout(predicate::str::contains("empty — record was staged without interactive prompts"));
 }
