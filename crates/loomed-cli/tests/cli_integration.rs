@@ -1452,3 +1452,224 @@ fn show_displays_empty_payload_note_for_non_interactive_add() {
         .stdout(predicate::str::contains("payload"))
         .stdout(predicate::str::contains("empty — record was staged without interactive prompts"));
 }
+
+// ---------------------------------------------------------------------------
+// `loomed remote` and `loomed sync` tests — spec §8
+// ---------------------------------------------------------------------------
+
+/// Spec §8.1: `loomed remote set` must store the remote path in vault.toml and
+/// confirm the setting to the user.
+#[test]
+fn remote_set_configures_sync_remote_in_vault() {
+    let dir = TempDir::new().unwrap();
+    let remote_dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["remote", "set", remote_dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("remote set:"))
+        .stdout(predicate::str::contains(remote_dir.path().to_str().unwrap()));
+
+    // vault.toml must now contain sync_remote
+    let vault_toml = std::fs::read_to_string(dir.path().join(".loomed").join("vault.toml"))
+        .expect("vault.toml must be readable");
+    assert!(
+        vault_toml.contains("sync_remote"),
+        "vault.toml must contain sync_remote after `loomed remote set`"
+    );
+}
+
+/// Spec §8.1: `loomed remote set` with a path that does not exist must fail
+/// with a clear error before writing anything.
+#[test]
+fn remote_set_fails_for_nonexistent_path() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["remote", "set", "/this/path/does/not/exist"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+/// Spec §8.1: `loomed sync --status` on a fresh vault with a configured remote
+/// must report the genesis commit as pending.
+#[test]
+fn sync_status_reports_pending_commits() {
+    let dir = TempDir::new().unwrap();
+    let remote_dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Configure remote
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["remote", "set", remote_dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    // Status must show the genesis commit as pending
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["sync", "--status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pending"))
+        .stdout(predicate::str::contains("sha256:"));
+}
+
+/// Spec §8.1: `loomed sync` must push all unsynced commits to the remote and
+/// report the number of commits pushed.
+#[test]
+fn sync_pushes_all_local_commits_to_remote() {
+    let dir = TempDir::new().unwrap();
+    let remote_dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Add and commit a record so there's more than just the genesis commit
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("commit")
+        .assert()
+        .success();
+
+    // Configure and push
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["remote", "set", remote_dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pushed  sha256:"))
+        .stdout(predicate::str::contains("sync complete."))
+        .stdout(predicate::str::contains("2 commit(s) pushed")); // genesis + lab_result
+}
+
+/// Spec §8.1: Running `loomed sync` a second time when the remote is already
+/// up-to-date must report "already up to date" and push nothing.
+#[test]
+fn sync_is_idempotent_when_remote_is_current() {
+    let dir = TempDir::new().unwrap();
+    let remote_dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["remote", "set", remote_dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    // First sync — pushes genesis
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("sync")
+        .assert()
+        .success();
+
+    // Second sync — nothing to push
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("sync")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already up to date"));
+}
+
+/// Spec §8.1: `loomed sync --status` after a full push must report
+/// "up to date" with no pending commits.
+#[test]
+fn sync_status_shows_up_to_date_after_full_push() {
+    let dir = TempDir::new().unwrap();
+    let remote_dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["remote", "set", remote_dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("sync")
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["sync", "--status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("up to date"));
+}
+
+/// Spec §8.1: `loomed sync` with no configured remote and no --to flag must
+/// fail with a clear error before doing any work.
+#[test]
+fn sync_fails_with_no_remote_configured() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("sync")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+/// Spec §8.1: `loomed sync --to <path>` must override the configured remote
+/// for a single invocation without modifying vault.toml.
+#[test]
+fn sync_to_flag_overrides_configured_remote() {
+    let dir = TempDir::new().unwrap();
+    let override_remote = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // No configured remote — but --to provides one
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["sync", "--to", override_remote.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pushed  sha256:"));
+
+    // vault.toml must still have no sync_remote (--to is a one-off)
+    let vault_toml = std::fs::read_to_string(dir.path().join(".loomed").join("vault.toml"))
+        .unwrap();
+    assert!(
+        !vault_toml.contains("sync_remote"),
+        "vault.toml must not be modified by --to flag"
+    );
+}

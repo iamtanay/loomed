@@ -21,8 +21,10 @@ pub mod commit;
 pub mod init;
 pub mod log;
 pub mod prompts;
+pub mod remote;
 pub mod show;
 pub mod status;
+pub mod sync_cmd;
 pub mod verify;
 
 /// Reads the vault passphrase for the current operation.

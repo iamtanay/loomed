@@ -6,16 +6,20 @@
 //! It contains no business logic. It parses arguments, calls the appropriate
 //! library functions, and prints results to the terminal.
 //!
-//! ## Available Commands (Phase 1)
-//! - `loomed init`               — Initialise a new patient vault
-//! - `loomed add`                — Stage a record for commit (empty payload)
-//! - `loomed add -i`             — Stage a record with interactive payload prompts
-//! - `loomed commit`             — Sign and commit the staged record
-//! - `loomed log`                — Display the full commit history
-//! - `loomed show <commit_id>`   — Inspect a specific commit by ID
-//! - `loomed status`             — Show current vault state and staged record
-//! - `loomed verify <commit_id>` — Verify a single commit's integrity
-//! - `loomed verify --chain`     — Verify the full hash chain
+//! ## Available Commands (Phase 1 + Phase 2)
+//! - `loomed init`                         — Initialise a new patient vault
+//! - `loomed add`                          — Stage a record for commit (empty payload)
+//! - `loomed add -i`                       — Stage a record with interactive payload prompts
+//! - `loomed commit`                       — Sign and commit the staged record
+//! - `loomed log`                          — Display the full commit history
+//! - `loomed show <commit_id>`             — Inspect a specific commit by ID
+//! - `loomed status`                       — Show current vault state and staged record
+//! - `loomed verify <commit_id>`           — Verify a single commit's integrity
+//! - `loomed verify --chain`               — Verify the full hash chain
+//! - `loomed remote set <path>`            — Configure the sync remote
+//! - `loomed sync`                         — Push commits to the configured remote
+//! - `loomed sync --status`                — Show which commits are pending sync
+//! - `loomed sync --to <path>`             — Push to a specific remote (one-off override)
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
 
@@ -119,6 +123,49 @@ enum Command {
         #[arg(long)]
         chain: bool,
     },
+
+    /// Configure the sync remote for this vault.
+    ///
+    /// `loomed remote set <path>` stores the path in vault.toml.
+    /// Future `loomed sync` invocations use this path as the default remote.
+    Remote {
+        #[command(subcommand)]
+        subcommand: RemoteSubcommand,
+    },
+
+    /// Sync committed records to the remote vault.
+    ///
+    /// Without --status: pushes all commits absent from the remote and
+    /// updates the remote HEAD. No passphrase required.
+    ///
+    /// With --status: shows which commits are pending without pushing.
+    ///
+    /// With --to <path>: overrides the configured remote for this invocation.
+    Sync {
+        /// Show pending commits without pushing.
+        #[arg(long)]
+        status: bool,
+
+        /// Override the configured remote for this invocation.
+        ///
+        /// Example: loomed sync --to /backup/loomed
+        #[arg(long)]
+        to: Option<String>,
+    },
+}
+
+/// Subcommands for `loomed remote`.
+#[derive(clap::Subcommand)]
+enum RemoteSubcommand {
+    /// Set the sync remote path for this vault.
+    ///
+    /// Writes the path to vault.toml. Run `loomed sync` afterwards to push.
+    ///
+    /// Example: loomed remote set /backup/loomed
+    Set {
+        /// The filesystem path to use as the sync remote.
+        path: String,
+    },
 }
 
 fn main() {
@@ -135,6 +182,12 @@ fn main() {
         Command::Status => commands::status::run(),
         Command::Verify { commit_id, chain } => {
             commands::verify::run(commit_id.as_deref(), chain)
+        }
+        Command::Remote {
+            subcommand: RemoteSubcommand::Set { path },
+        } => commands::remote::run(&path),
+        Command::Sync { status, to } => {
+            commands::sync_cmd::run(status, to.as_deref())
         }
     };
 
