@@ -2,7 +2,7 @@
 
 This file tracks what has been built, what is next, and what is coming in later phases. It is the ground truth for where we are in the protocol implementation.
 
-**Current status: Phase 2 Session 1 complete. 138 tests passing.**
+**Current status: Phase 2 Session 2 complete. 154 tests passing.**
 
 ---
 
@@ -127,35 +127,57 @@ loomed verify --chain                    # verify full chain from genesis
 | `loomed-sync` | 11 (new) |
 | **Total** | **138, 0 failures** |
 
-### Phase 2 Session 2 — Next
+### Phase 2 Session 2 ✅ Complete
 
-Pull, conflict detection, and Sync Rebase (spec §8.2, §8.3):
+Pull from remote, Sync Rebase algorithm, fork resolution (spec §8.2, §8.3):
 
 **`loomed sync --pull`** — fetch commits from remote that are absent locally:
-- `backend.list_remote_commits()` − `vault.list_commit_ids()` = to fetch
+- `SyncManager::pull()` computes set difference and transfers raw AES-256-GCM bytes
 - `backend.pull_commit(id)` → `vault.write_commit_raw(id)` for each
-- After pull: traverse chain to find new HEAD and update local HEAD
+- Updates local HEAD to match remote HEAD after pull
+- No passphrase required — transfers encrypted bytes only
 
 **`loomed sync --resolve`** — Sync Rebase algorithm (spec §8.3):
-- Detect fork: two commits share the same `previous_hash`
-- Sort conflicting commits by timestamp ascending, tiebreak by `commit_id` lexicographic (±60s clock skew tolerance)
-- Re-link sequentially, recompute `commit_id` for shifted commits
-- Preserve original values in `sync_metadata.pre_sync_previous_hash` and `pre_sync_commit_id`
-- Original `signature` is preserved (valid against original content)
-- Log rebase as a protocol operation: write `SyncRebaseEvent` to audit trail
-
-**`loomed-core` additions**:
-- `rebase.rs` — pure `sync_rebase(commits: Vec<Commit>) -> Vec<Commit>` function. No I/O.
-- Tests for fork detection, timestamp ordering, lexicographic tiebreaker, `sync_metadata` preservation.
+- `SyncManager::resolve()` loads all local commits and calls `sync_rebase()`
+- `sync_rebase()` in `loomed-core/src/rebase.rs` (620 lines, 12 tests):
+  - Detects fork: two commits share the same `previous_hash`
+  - Sorts conflicting commits by timestamp ascending, tiebreak by `commit_id` lexicographic (±60s clock skew tolerance)
+  - Re-links sequentially, recomputes `commit_id` for rebased commits
+  - Preserves original `previous_hash` and `commit_id` in `sync_metadata` for audit
+  - Signatures never modified — remain valid via `pre_sync_previous_hash` per spec
+  - Deterministic: same fork always produces identical linearisation
+- Requires vault passphrase (re-encrypts rebased commits)
+- Updates local HEAD to the last commit in rebased chain
 
 **`loomed-store` additions**:
-- `Vault::update_head(commit_id)` — update local HEAD after a pull or rebase.
+- `Vault::update_head(commit_id)` — update local HEAD after pull or resolve
+
+**`loomed-sync` additions**:
+- `SyncManager::pull()` with `PullReport` result type
+- `SyncManager::resolve()` returning count of rebased commits
+- `SyncError::Protocol()` variant for Sync Rebase invariant violations
+
+**`loomed-cli` additions**:
+- `loomed sync --pull` — fetch commits from remote
+- `loomed sync --resolve` — linearise forks locally (no remote needed)
+- 4 new integration tests for pull and resolve workflows
+
+**Test count:**
+
+| Crate | Tests |
+|---|---|
+| `loomed-cli` | 51 |
+| `loomed-core` | 53 (41 + 12 rebase) |
+| `loomed-crypto` | 17 |
+| `loomed-store` | 18 |
+| `loomed-sync` | 15 (11 push/status + 4 pull/resolve) |
+| **Total** | **154, 0 failures** |
 
 ---
 
-## Session 7 — Post-Phase-2 Hardening
+## Phase 2 Session 3 — Next
 
-Phase 1 post-completion hardening. Three tasks to tighten the CLI surface before moving to Phase 2.
+CLI hardening and payload display enhancements. Three tasks to polish the Phase 2 surface.
 
 ### Task 1: `loomed log` — Payload Summary Line
 **What:** `loomed log` currently shows `commit_id`, type, date, and message for each commit. For commits with typed payloads, add a one-line payload summary (e.g. `FBG: 98.5 mg/dL` for lab results, `Metformin 500mg × 30d` for prescriptions).
