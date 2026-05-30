@@ -24,6 +24,7 @@ pub mod commit;
 pub mod error;
 pub mod participant;
 pub mod payload;
+pub mod rebase;
 pub mod verify;
 
 pub use builder::{prepare, PendingCommit};
@@ -36,4 +37,5 @@ pub use payload::{
     DiagnosisPayload, ExternalRef, LabResultPayload, PrescriptionPayload, ProcedurePayload,
     RadiologyReportPayload, RecordPayload, ReferenceRange, TeamMember, VaccinationPayload,
 };
+pub use rebase::sync_rebase;
 pub use verify::{verify_chain, verify_commit, ChainVerification, CommitVerification};
