@@ -2,7 +2,7 @@
 
 This file tracks what has been built, what is next, and what is coming in later phases. It is the ground truth for where we are in the protocol implementation.
 
-**Current status: Session 6 complete. 119 tests passing. Phase 1 complete.**
+**Current status: Phase 2 Session 1 complete. 138 tests passing.**
 
 ---
 
@@ -92,7 +92,68 @@ loomed verify --chain                    # verify full chain from genesis
 
 ---
 
-## Session 7 — Next
+## Phase 2 — Encrypted Cloud Sync 🔄 In Progress
+
+### Phase 2 Session 1 ✅ Complete
+
+**`loomed-sync` crate** (new):
+- `CloudVaultBackend` trait — backend-agnostic interface for push/pull/list/head operations. Object-safe for future runtime dispatch.
+- `LocalFileBackend` — zero-cost reference backend storing encrypted commits in a local directory. Mirrors `.loomed/` structure exactly.
+- `SyncManager` — orchestrates push and status. Transfers raw AES-256-GCM bytes without the passphrase.
+- `SyncReport` and `SyncStatus` result types.
+- 11 unit tests covering roundtrips, idempotency, HEAD updates, not-found errors, and raw bytes assertion.
+
+**`loomed-store` additions**:
+- `VaultMetadata.sync_remote: Option<String>` — persisted remote path (backward-compatible, serde default)
+- `Vault::read_commit_raw()` — returns raw encrypted bytes without decrypting
+- `Vault::write_commit_raw()` — stores raw bytes (for future pull support)
+- `Vault::set_remote()` — updates vault.toml with remote path
+
+**`loomed-cli` additions**:
+- `loomed remote set <path>` — configure the sync remote in vault.toml
+- `loomed sync` — push all commits absent from remote; no passphrase required
+- `loomed sync --status` — show pending commits without pushing
+- `loomed sync --to <path>` — one-off remote override without modifying vault.toml
+- 8 integration tests covering all sync paths
+
+**Test count:**
+
+| Crate | Tests |
+|---|---|
+| `loomed-cli` | 51 (+8 sync tests) |
+| `loomed-core` | 41 |
+| `loomed-crypto` | 17 |
+| `loomed-store` | 18 |
+| `loomed-sync` | 11 (new) |
+| **Total** | **138, 0 failures** |
+
+### Phase 2 Session 2 — Next
+
+Pull, conflict detection, and Sync Rebase (spec §8.2, §8.3):
+
+**`loomed sync --pull`** — fetch commits from remote that are absent locally:
+- `backend.list_remote_commits()` − `vault.list_commit_ids()` = to fetch
+- `backend.pull_commit(id)` → `vault.write_commit_raw(id)` for each
+- After pull: traverse chain to find new HEAD and update local HEAD
+
+**`loomed sync --resolve`** — Sync Rebase algorithm (spec §8.3):
+- Detect fork: two commits share the same `previous_hash`
+- Sort conflicting commits by timestamp ascending, tiebreak by `commit_id` lexicographic (±60s clock skew tolerance)
+- Re-link sequentially, recompute `commit_id` for shifted commits
+- Preserve original values in `sync_metadata.pre_sync_previous_hash` and `pre_sync_commit_id`
+- Original `signature` is preserved (valid against original content)
+- Log rebase as a protocol operation: write `SyncRebaseEvent` to audit trail
+
+**`loomed-core` additions**:
+- `rebase.rs` — pure `sync_rebase(commits: Vec<Commit>) -> Vec<Commit>` function. No I/O.
+- Tests for fork detection, timestamp ordering, lexicographic tiebreaker, `sync_metadata` preservation.
+
+**`loomed-store` additions**:
+- `Vault::update_head(commit_id)` — update local HEAD after a pull or rebase.
+
+---
+
+## Session 7 — Post-Phase-2 Hardening
 
 Phase 1 post-completion hardening. Three tasks to tighten the CLI surface before moving to Phase 2.
 
