@@ -3,6 +3,7 @@ members = [
     "crates/loomed-core",
     "crates/loomed-crypto",
     "crates/loomed-store",
+    "crates/loomed-sync",
     "crates/loomed-cli",
 ]
 resolver = "2"

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 loomed-core = { path = "../loomed-core" }
 loomed-store = { path = "../loomed-store" }
+loomed-sync = { path = "../loomed-sync" }
 loomed-crypto = { path = "../loomed-crypto" }
 serde = { workspace = true }
 serde_json = { workspace = true }

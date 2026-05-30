@@ -71,6 +71,15 @@ pub struct VaultMetadata {
 
     /// The public key of the vault owner, encoded as "ed25519:<hex>".
     pub public_key: String,
+
+    /// The path or URI of the configured sync remote, if one has been set.
+    ///
+    /// `None` if no remote has been configured. Set via `loomed remote set`.
+    /// In Phase 2 this is a local filesystem path (e.g. `/backup/loomed`).
+    /// In later phases this will support cloud URIs (e.g. `s3://bucket/prefix`).
+    /// See spec §5 and §8.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_remote: Option<String>,
 }
 
 /// A handle to an open local vault.
@@ -128,6 +137,7 @@ impl Vault {
             idp_type: "passphrase".to_string(),
             argon2_salt: argon2_salt.to_string(),
             public_key: public_key.to_string(),
+            sync_remote: None,
         };
 
         let toml_str = toml::to_string(&metadata).map_err(|e| StoreError::MetadataWriteFailed {
@@ -317,6 +327,90 @@ impl Vault {
         }
 
         Ok(ids)
+    }
+
+    /// Reads a commit file from disk as raw encrypted bytes, without decrypting.
+    ///
+    /// Used by the sync layer to transfer ciphertext to a remote backend
+    /// without requiring the vault passphrase. The bytes are identical to
+    /// what was written by [`Vault::write_commit`].
+    ///
+    /// # Arguments
+    ///
+    /// * `commit_id` — The commit_id of the commit to read.
+    ///
+    /// # Errors
+    ///
+    /// * [`StoreError::CommitReadFailed`] — The file could not be read.
+    ///
+    /// See spec §6 and §8.1.
+    pub fn read_commit_raw(&self, commit_id: &CommitHash) -> Result<Vec<u8>, StoreError> {
+        let id_str = commit_id.as_str();
+        let filename = format!("{}{}", id_str.replace("sha256:", ""), COMMIT_EXT);
+        let commit_path = self.vault_path.join(COMMITS_DIR).join(&filename);
+
+        fs::read(&commit_path).map_err(|e| StoreError::CommitReadFailed {
+            commit_id: id_str.to_string(),
+            reason: e.to_string(),
+        })
+    }
+
+    /// Writes a raw encrypted commit file to disk without decrypting.
+    ///
+    /// Used by the sync layer to store a commit received from a remote
+    /// backend. The caller is responsible for ensuring `ciphertext` was
+    /// produced by [`Vault::write_commit`] and is a valid AES-256-GCM
+    /// encrypted commit for this vault's key.
+    ///
+    /// Does NOT update HEAD — the caller must call this for every commit
+    /// in chain order and update HEAD separately.
+    ///
+    /// # Arguments
+    ///
+    /// * `commit_id` — The commit_id of the commit to write. Used as the filename.
+    /// * `ciphertext` — The raw encrypted bytes to write.
+    ///
+    /// # Errors
+    ///
+    /// * [`StoreError::Io`] — The file could not be written.
+    ///
+    /// See spec §6 and §8.1.
+    pub fn write_commit_raw(
+        &self,
+        commit_id: &CommitHash,
+        ciphertext: &[u8],
+    ) -> Result<(), StoreError> {
+        let id_str = commit_id.as_str();
+        let filename = format!("{}{}", id_str.replace("sha256:", ""), COMMIT_EXT);
+        let commit_path = self.vault_path.join(COMMITS_DIR).join(&filename);
+        fs::write(&commit_path, ciphertext)?;
+        Ok(())
+    }
+
+    /// Configures the sync remote for this vault by writing it to vault.toml.
+    ///
+    /// The remote is a path or URI that the sync layer uses as the push
+    /// and pull target. In Phase 2 this is a local filesystem path.
+    /// In later phases this will support cloud backend URIs.
+    ///
+    /// # Arguments
+    ///
+    /// * `remote` — The remote path or URI to store.
+    ///
+    /// # Errors
+    ///
+    /// * [`StoreError::MetadataWriteFailed`] — vault.toml could not be written.
+    /// * [`StoreError::Io`] — A filesystem error occurred.
+    ///
+    /// See spec §5 and §8.1.
+    pub fn set_remote(&mut self, remote: &str) -> Result<(), StoreError> {
+        self.metadata.sync_remote = Some(remote.to_string());
+        let toml_str =
+            toml::to_string(&self.metadata).map_err(|e| StoreError::MetadataWriteFailed {
+                reason: e.to_string(),
+            })?;
+        fs::write(self.vault_path.join(VAULT_TOML), toml_str)?;
+        Ok(())
     }
 
     /// Derives the AES-256 encryption key from the passphrase and vault salt.

@@ -26,4 +26,4 @@ pub mod vault;
 
 pub use error::StoreError;
 pub use stage::{clear_staged, has_staged, read_staged, write_staged, StagedRecord};
-pub use vault::Vault;
+pub use vault::{Vault, VaultMetadata};

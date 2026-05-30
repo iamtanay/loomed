@@ -1,0 +1,20 @@
+[package]
+name = "loomed-sync"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+loomed-core  = { path = "../loomed-core" }
+loomed-store = { path = "../loomed-store" }
+thiserror    = { workspace = true }
+chrono       = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+loomed-crypto = { path = "../loomed-crypto" }
+hex = { workspace = true }
