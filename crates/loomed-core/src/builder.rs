@@ -132,6 +132,10 @@ impl PendingCommit {
 ///   not be serialised.
 ///
 /// See spec §6.2.
+// Spec §6.2 defines exactly these eight fields for a commit. This function
+// maps 1-to-1 to the protocol schema — splitting into a struct would add
+// indirection without protocol value. The allow is intentional and scoped.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare(
     patient_id: ParticipantId,
     author_id: ParticipantId,
