@@ -4,6 +4,7 @@
 //!
 //! See spec §8.
 
+use loomed_core::LooMedError;
 use loomed_store::StoreError;
 
 /// All errors that can occur during a sync operation.
@@ -64,4 +65,12 @@ pub enum SyncError {
     /// An I/O error during a sync operation.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A protocol-level error from the LooMed core (e.g., Sync Rebase invariant violation).
+    ///
+    /// Wraps [`LooMedError`] for errors that occur during operations like
+    /// Sync Rebase that are semantically part of the sync layer but defined
+    /// in `loomed-core`. See spec §8.3.
+    #[error("protocol error: {0}")]
+    Protocol(#[from] LooMedError),
 }

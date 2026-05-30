@@ -413,6 +413,27 @@ impl Vault {
         Ok(())
     }
 
+    /// Updates the local HEAD pointer to a new commit_id.
+    ///
+    /// Called during `loomed sync --pull` and `loomed sync --resolve` to
+    /// update the local HEAD after pulling commits from the remote or
+    /// resolving a fork via Sync Rebase (spec §8.2, §8.3).
+    ///
+    /// # Arguments
+    ///
+    /// * `commit_id` — The new HEAD commit_id to write (e.g., "sha256:...").
+    ///
+    /// # Errors
+    ///
+    /// * [`StoreError::Io`] — The HEAD file could not be written.
+    ///
+    /// See spec §8.2 and §8.3.
+    pub fn update_head(&self, commit_id: &CommitHash) -> Result<(), StoreError> {
+        let head_path = self.vault_path.join(HEAD_FILE);
+        fs::write(head_path, commit_id.to_string())?;
+        Ok(())
+    }
+
     /// Derives the AES-256 encryption key from the passphrase and vault salt.
     fn derive_encryption_key(
         &self,

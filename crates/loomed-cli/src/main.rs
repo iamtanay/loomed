@@ -17,9 +17,11 @@
 //! - `loomed verify <commit_id>`           — Verify a single commit's integrity
 //! - `loomed verify --chain`               — Verify the full hash chain
 //! - `loomed remote set <path>`            — Configure the sync remote
-//! - `loomed sync`                         — Push commits to the configured remote
+//! - `loomed sync`                         — Push commits to the remote
 //! - `loomed sync --status`                — Show which commits are pending sync
-//! - `loomed sync --to <path>`             — Push to a specific remote (one-off override)
+//! - `loomed sync --pull`                  — Fetch commits from the remote
+//! - `loomed sync --resolve`               — Resolve forks via Sync Rebase
+//! - `loomed sync --to <path>`             — Push/pull to/from a specific remote
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
 
@@ -135,16 +137,34 @@ enum Command {
 
     /// Sync committed records to the remote vault.
     ///
-    /// Without --status: pushes all commits absent from the remote and
+    /// Without flags: pushes all commits absent from the remote and
     /// updates the remote HEAD. No passphrase required.
     ///
     /// With --status: shows which commits are pending without pushing.
     ///
-    /// With --to <path>: overrides the configured remote for this invocation.
+    /// With --pull: fetches all commits from the remote that are absent locally
+    /// and updates the local HEAD.
+    ///
+    /// With --resolve: detects and resolves forks in the local commit chain via
+    /// Sync Rebase (spec §8.3). Requires the vault passphrase.
+    ///
+    /// With --to <path>: overrides the configured remote for push/status/pull modes.
+    ///
+    /// Example: loomed sync --to /backup/loomed
     Sync {
         /// Show pending commits without pushing.
         #[arg(long)]
         status: bool,
+
+        /// Fetch commits from the remote.
+        #[arg(long)]
+        pull: bool,
+
+        /// Resolve forks via Sync Rebase.
+        ///
+        /// Does not require a configured remote. Requires the vault passphrase.
+        #[arg(long)]
+        resolve: bool,
 
         /// Override the configured remote for this invocation.
         ///
@@ -186,8 +206,8 @@ fn main() {
         Command::Remote {
             subcommand: RemoteSubcommand::Set { path },
         } => commands::remote::run(&path),
-        Command::Sync { status, to } => {
-            commands::sync_cmd::run(status, to.as_deref())
+        Command::Sync { status, pull, resolve, to } => {
+            commands::sync_cmd::run(status, pull, resolve, to.as_deref())
         }
     };
 
