@@ -2,7 +2,7 @@
 
 This file tracks what has been built, what is next, and what is coming in later phases. It is the ground truth for where we are in the protocol implementation.
 
-**Current status: Phase 2 Session 2 complete. 154 tests passing.**
+**Current status: Phase 2 Session 3 complete. 161 tests passing.**
 
 ---
 
@@ -175,25 +175,38 @@ Pull from remote, Sync Rebase algorithm, fork resolution (spec §8.2, §8.3):
 
 ---
 
-## Phase 2 Session 3 — Next
+## Phase 2 Session 3 ✅ Complete
 
-CLI hardening and payload display enhancements. Three tasks to polish the Phase 2 surface.
+CLI hardening and payload display enhancements, plus the first task of the [First Release Plan](FIRST_RELEASE_PLAN.md) (R1).
 
-### Task 1: `loomed log` — Payload Summary Line
-**What:** `loomed log` currently shows `commit_id`, type, date, and message for each commit. For commits with typed payloads, add a one-line payload summary (e.g. `FBG: 98.5 mg/dL` for lab results, `Metformin 500mg × 30d` for prescriptions).
-**Spec:** §6.2, §9, §20.
-**Scope:** `crates/loomed-cli/src/commands/log.rs` only. Deserialise payload into typed struct and format a summary string per record type. Empty payloads are silently omitted from the log line (no change to current output for non-interactive records).
+### What Was Built
 
-### Task 2: `loomed show` — Display `sync_metadata` pre-rebase fields
-**What:** The `sync_metadata` block in `loomed show` currently shows `offline` and `synced_at`. Phase 2 will populate `pre_sync_previous_hash` and `pre_sync_commit_id` during Sync Rebase. Extend the display to show those fields when non-null, so rebased commits are visually distinguishable in Phase 2.
-**Spec:** §8.3.
-**Scope:** `crates/loomed-cli/src/commands/show.rs` only.
+**`loomed log` — Payload Summary Line**
+- `payload_summary()` in `crates/loomed-cli/src/commands/log.rs` deserialises the payload into its typed struct per record type and prints a one-line summary under the message (e.g. `FBG: 98.5 mg/dL`, `Metformin 500mg × 30d`)
+- Empty payloads, protocol-internal record types, and payloads that fail typed deserialisation are all silently omitted — no summary line, no change to prior output
+- Spec §6.2, §9, §20
 
-### Task 3: Participant ID Format Validation — Full Spec §3.1
-**What:** `ParticipantId::new()` currently validates only the prefix (`LMP-`, `LMD-`, etc.) and minimum length. The full spec §3.1 ID format is `<TYPE>-<SCOPE?>-<BASE32_ID>-<CHECKSUM>`. Implement the full validation: base-32 character set check on the ID segment, and CRC-8 checksum verification on the final segment.
-**Why:** Phase 5 adds participant registration with full ID generation. The validation layer should be correct before the registry is built on top of it.
-**Spec:** §3.1.
-**Scope:** `crates/loomed-core/src/participant.rs`. Add 6+ tests covering valid and invalid ID formats including bad checksums and non-base32 characters.
+**`loomed show` — `sync_metadata` pre-rebase fields**
+- `pre_sync_previous_hash` and `pre_sync_commit_id` now print in the `sync` block when populated by Sync Rebase (spec §8.3)
+- Absent for unrebased commits — output is unchanged from Session 2 in that case
+
+**Participant ID Format Validation — Full Spec §3.1**
+- `ParticipantId::new()` in `crates/loomed-core/src/participant.rs` now validates the complete format: type prefix, segment count (3 for patients — no scope; 4 for clinician/institution/device/government — scope required), Crockford Base32 charset on the ID and checksum segments, and CRC-8 checksum verification
+- Checksum is computed over every segment preceding it (catches transcription errors in the scope segment too, not just the random ID)
+- **Blast radius wider than originally scoped**: the canonical example IDs (`LMP-7XKQR2MNVB-F4`, `LMD-APL-3NKWQ7HZRC-8A`, etc.) used as test fixtures across `loomed-core`, `loomed-store`, `loomed-sync`, and `loomed-cli` integration tests, plus `CLAUDE.md` and `README.md`, do not satisfy a real CRC-8 checksum — those illustrative spec values were never computed by an algorithm (confirmed by duplicate fake hashes elsewhere in the spec doc). Regenerated all canonical fixture IDs to valid checksums under the implemented algorithm (`LMP-7XKQR2MNVB-6A`, `LMD-APL-3NKWQ7HZRC-5N`, `LMI-APL-2MVZK9QXBT-08`, `LMV-ROCHE-5QNZK8MXBT-3P`, `LMG-AIIMS-4KZQR9WMNV-43`) and propagated the change everywhere they were used as a validated `ParticipantId`. Payload fields that carry participant-ID-*shaped* strings but are typed as plain `String` (e.g. `custodian_id`, `device_id`, `radiologist_id`) were left untouched — they are never checksum-validated.
+- 7 new tests: valid IDs for all 5 types, missing/extra scope segment, non-base32 character, incorrect checksum, wrong checksum length, transcription error in the scope segment
+- Spec §3.1
+
+### Test Count
+
+| Crate | Before | After |
+|---|---|---|
+| `loomed-core` | 53 | 60 (+7 participant ID tests) |
+| `loomed-cli` | 51 | 51 |
+| `loomed-crypto` | 17 | 17 |
+| `loomed-store` | 18 | 18 |
+| `loomed-sync` | 15 | 15 |
+| **Total** | **154** | **161, 0 failures** |
 
 ---
 
