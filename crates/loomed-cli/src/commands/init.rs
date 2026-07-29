@@ -138,7 +138,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// Returns an error only if stdin or stdout encounters an I/O failure.
 fn prompt_participant_id() -> Result<ParticipantId, Box<dyn std::error::Error>> {
     loop {
-        print!("enter your participant ID (e.g. LMP-7XKQR2MNVB-F4): ");
+        print!("enter your participant ID (e.g. LMP-7XKQR2MNVB-6A): ");
         std::io::stdout().flush()?;
 
         let mut input = String::new();

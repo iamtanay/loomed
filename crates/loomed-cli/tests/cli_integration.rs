@@ -55,7 +55,7 @@ use tempfile::TempDir;
 ///
 /// The format must match the LooMed participant ID grammar:
 /// prefix (LMP-, LMD-, LMI-, LMV-, LMG-) + 10 chars + dash + 2 chars.
-const TEST_PATIENT_ID: &str = "LMP-7XKQR2MNVB-F4";
+const TEST_PATIENT_ID: &str = "LMP-7XKQR2MNVB-6A";
 
 /// The passphrase used by all tests that initialise a vault.
 ///

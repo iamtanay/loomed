@@ -243,7 +243,7 @@ mod tests {
     use loomed_crypto::{generate_keypair, sign};
 
     fn test_patient_id() -> ParticipantId {
-        ParticipantId::new("LMP-7XKQR2MNVB-F4").unwrap()
+        ParticipantId::new("LMP-7XKQR2MNVB-6A").unwrap()
     }
 
     /// Builds a valid signed commit for testing.

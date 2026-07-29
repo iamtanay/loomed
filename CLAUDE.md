@@ -33,7 +33,7 @@ The CLI binary is `loomed` (from `loomed-cli`). After `cargo build`:
 
 ```bash
 # Non-interactive invocation (how tests work):
-LOOMED_PASSPHRASE=mypassphrase echo "LMP-7XKQR2MNVB-F4" | ./target/debug/loomed init
+LOOMED_PASSPHRASE=mypassphrase echo "LMP-7XKQR2MNVB-6A" | ./target/debug/loomed init
 LOOMED_PASSPHRASE=mypassphrase ./target/debug/loomed commit
 ```
 

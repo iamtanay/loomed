@@ -204,7 +204,7 @@ mod tests {
     use loomed_crypto::{generate_keypair, sign};
 
     fn test_patient_id() -> ParticipantId {
-        ParticipantId::new("LMP-7XKQR2MNVB-F4").unwrap()
+        ParticipantId::new("LMP-7XKQR2MNVB-6A").unwrap()
     }
 
     /// Spec §6.2: A prepared commit must have an empty commit_id before finalisation.

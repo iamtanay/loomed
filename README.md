@@ -127,11 +127,11 @@ Every actor in LooMed has a typed, permanent identifier:
 
 | Type | Example | Description |
 |---|---|---|
-| Patient | `LMP-7XKQR2MNVB-F4` | Vault owner |
-| Clinician | `LMD-APL-3NKWQ7HZRC-8A` | Doctor at Apollo |
-| Institution | `LMI-APL-2MVZK9QXBT-C2` | Apollo Hospitals |
-| Device | `LMV-ROCHE-5QNZK8MXBT-D7` | Roche analyser |
-| Government | `LMG-AIIMS-4KZQR9WMNV-B3` | AIIMS Delhi |
+| Patient | `LMP-7XKQR2MNVB-6A` | Vault owner |
+| Clinician | `LMD-APL-3NKWQ7HZRC-5N` | Doctor at Apollo |
+| Institution | `LMI-APL-2MVZK9QXBT-08` | Apollo Hospitals |
+| Device | `LMV-ROCHE-5QNZK8MXBT-3P` | Roche analyser |
+| Government | `LMG-AIIMS-4KZQR9WMNV-43` | AIIMS Delhi |
 
 Patient IDs carry no personally identifiable information at the protocol level.
 

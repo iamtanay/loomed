@@ -478,7 +478,7 @@ mod tests {
     }
 
     fn test_patient_id() -> ParticipantId {
-        ParticipantId::new("LMP-7XKQR2MNVB-F4").unwrap()
+        ParticipantId::new("LMP-7XKQR2MNVB-6A").unwrap()
     }
 
     fn test_passphrase() -> &'static [u8] {
@@ -554,7 +554,7 @@ mod tests {
         let dir = temp_dir();
         let vault = init_test_vault(&dir);
 
-        assert_eq!(vault.metadata.patient_id, "LMP-7XKQR2MNVB-F4");
+        assert_eq!(vault.metadata.patient_id, "LMP-7XKQR2MNVB-6A");
         assert_eq!(vault.metadata.protocol_version, "0.2");
         assert_eq!(vault.metadata.idp_type, "passphrase");
         assert_eq!(vault.metadata.argon2_salt, test_salt_hex());
@@ -591,7 +591,7 @@ mod tests {
         init_test_vault(&dir);
 
         let opened = Vault::open(dir.path()).unwrap();
-        assert_eq!(opened.metadata.patient_id, "LMP-7XKQR2MNVB-F4");
+        assert_eq!(opened.metadata.patient_id, "LMP-7XKQR2MNVB-6A");
         assert_eq!(opened.metadata.argon2_salt, test_salt_hex());
     }
 

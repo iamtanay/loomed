@@ -329,7 +329,7 @@ mod tests {
     }
 
     fn test_patient_id() -> ParticipantId {
-        ParticipantId::new("LMP-7XKQR2MNVB-F4").unwrap()
+        ParticipantId::new("LMP-7XKQR2MNVB-6A").unwrap()
     }
 
     fn init_test_vault(dir: &TempDir) -> Vault {

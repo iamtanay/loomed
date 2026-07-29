@@ -113,18 +113,27 @@ pub fn run(commit_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("auth        {}", auth_str);
 
-    // Sync metadata — see spec §8
+    // Sync metadata — see spec §8. pre_sync_previous_hash and
+    // pre_sync_commit_id are populated only when Sync Rebase has re-linked
+    // this commit (spec §8.3); shown only when present so unrebased commits
+    // display exactly as before.
     println!();
     println!("sync");
-    println!("  offline   {}", commit.sync_metadata.created_offline);
+    println!("  offline                {}", commit.sync_metadata.created_offline);
     println!(
-        "  synced_at {}",
+        "  synced_at              {}",
         commit
             .sync_metadata
             .synced_at
             .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
             .unwrap_or_else(|| "not yet synced".to_string())
     );
+    if let Some(ref pre_hash) = commit.sync_metadata.pre_sync_previous_hash {
+        println!("  pre_sync_previous_hash {}", pre_hash.as_str());
+    }
+    if let Some(ref pre_id) = commit.sync_metadata.pre_sync_commit_id {
+        println!("  pre_sync_commit_id     {}", pre_id.as_str());
+    }
 
     // Typed payload display per spec §9
     println!();
