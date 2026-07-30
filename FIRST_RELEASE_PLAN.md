@@ -62,11 +62,13 @@ Numbering continues from where `PLAN.md` left off (Phase 2 Session 2 complete, 1
 - This also lays the groundwork for R9 (participant ID generation reuses the same checksum logic)
 - **Scope note surfaced during implementation**: the spec's example participant IDs turned out to be illustrative, not real checksums — regenerating them rippled into every crate's test fixtures plus `README.md`/`CLAUDE.md`. Full detail logged in `PLAN.md`'s Phase 2 Session 3 entry. 161 tests passing, 0 failures.
 
-### R2 — Consent Token Issuance (Phase 3, part 1)
+### R2 — Consent Token Issuance ✅ Complete (Phase 3, part 1)
 - `ConsentToken` commit type wired into `loomed-core`
-- `loomed share <participant_id> --scope <scope> --duration <hours> --purpose <purpose>`
+- `loomed share <participant_id> --scope <scope> --duration <hours> --purpose <purpose> [--access-type read|write]`
 - Signed by patient key, written as a `consent_token` commit for auditability
 - Scopes: `full_record`, `record_type:<type>`, `commit:<id>` (date_range deferred)
+- Added `--access-type` beyond the spec §20 CLI signature — otherwise there'd be no way to issue a write token at all, and R3 needs one to test enforcement against
+- **Caught during implementation**: an early cut validated everything except `duration_hours` before the passphrase prompt, which hung `cargo test` on the fail-fast test for it (blocked on a passphrase read with no terminal attached). Fixed before landing — full detail in `PLAN.md`'s Phase 3 Session 1 entry. 183 tests passing, 0 failures.
 
 ### R3 — Consent Token Enforcement (Phase 3, part 2)
 - `loomed commit --token <token_id>` path for non-patient participants writing under a token

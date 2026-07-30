@@ -2,7 +2,7 @@
 
 This file tracks what has been built, what is next, and what is coming in later phases. It is the ground truth for where we are in the protocol implementation.
 
-**Current status: Phase 2 Session 3 complete. 161 tests passing.**
+**Current status: Phase 3 Session 1 complete (consent token issuance). 183 tests passing.**
 
 ---
 
@@ -210,90 +210,46 @@ CLI hardening and payload display enhancements, plus the first task of the [Firs
 
 ---
 
----
+## Phase 3 Session 1 ✅ Complete — Consent Token Issuance
 
-## Phase 2 — Encrypted Cloud Sync 🔜 Next Phase
+R2 of the [First Release Plan](FIRST_RELEASE_PLAN.md). Spec §10.1.
 
-**Spec:** §5, §8.
+### What Was Built
 
-This phase adds cloud persistence and offline-first sync. The local vault remains the source of truth during offline operation; the cloud vault is the authoritative sync target.
+**`loomed-core` — new `consent.rs` module**:
+- `ConsentScope` enum (`FullRecord`, `RecordType(RecordType)`, `Commit(CommitHash)`) with hand-written `Display`/`FromStr`/`Serialize`/`Deserialize` so the wire format matches spec §10.1 exactly (`"full_record"`, `"record_type:lab_result"`, `"commit:sha256:..."`) rather than a nested JSON object. `date_range:<from>:<to>` is deferred past v1.0.
+- `AccessType` enum (`Read`, `Write`) — standard derive, `read`/`write` on the wire
+- `ConsentToken` struct matching the full spec §10.1 schema, including its own `patient_signature` — independent of any wrapping commit's signature, so an institution holding just the token JSON can verify it without the patient's chain
+- `prepare_token()` / `PendingConsentToken::finalise()` — sign-then-embed flow mirroring `builder::prepare()` / `PendingCommit::finalise()`
+- `RecordType::ConsentToken` variant added (serialises to `consent_token`)
+- 13 new tests: scope round-trips for all 3 in-scope variants, invalid scope strings, non-positive duration rejected, signature verifies against the issuing key and not against any other key
 
-### What to Build
+**`loomed-cli` — new `loomed share` command**:
+- `loomed share <participant_id> --scope <scope> --duration <hours> --purpose <purpose> [--access-type read|write]` (`--access-type` is an addition beyond the spec §20 signature — needed so a write token can actually be issued via the CLI; defaults to `read`)
+- Validates participant ID, scope, access type, and duration before opening the vault or prompting for a passphrase
+- Signs the token with the same deterministic keypair used for commits, then wraps it in a `consent_token` commit (self-authored, chained after HEAD) for auditability
+- Prints the full token JSON for out-of-band delivery to the institution — there is no delivery channel yet
+- 8 new integration tests: happy path, log visibility, write access type, and 5 fail-fast validation cases
 
-**`loomed-sync` crate** (new):
-- Cloud vault adapter interface — defined as a trait, not tied to any specific backend
-- `loomed sync` — push all committed-but-unsynced `.lmc` files to cloud vault
-- `loomed sync --status` — show which commits are pending sync
-- `loomed sync --resolve` — detect and resolve forks via Sync Rebase algorithm
+**Bug caught during this session**: the initial `share.rs` validated participant ID, scope, and access type up front but left the `duration_hours > 0` check inside `consent::prepare_token()`, which runs *after* the passphrase prompt. The `share_rejects_non_positive_duration_before_passphrase` test (no `LOOMED_PASSPHRASE` set, matching the fail-fast test pattern used elsewhere) exposed this immediately — `cargo test` hung because the command fell through to `rpassword::prompt_password()` waiting on a terminal that wasn't there. Fixed by moving the duration check into `share.rs`'s Step 1 validation block, ahead of the vault open (coding standards §0.6). `prepare_token()` keeps its own check too — a library invariant, not something that should depend on every caller getting it right.
 
-**Sync Rebase algorithm** (in `loomed-sync` or `loomed-core`):
-- Detect fork: two commits share the same `previous_hash`
-- Sort conflicting commits by timestamp (ascending), tiebreak by `commit_id` lexicographic
-- Re-link sequentially, recompute `commit_id` for shifted commits
-- Preserve original values in `sync_metadata.pre_sync_previous_hash` and `pre_sync_commit_id`
-- Original signature is preserved (remains valid against original content)
-- Clock skew tolerance: ±60 seconds (use `commit_id` tiebreaker within this window)
+### What Was NOT Built (this session)
 
-**`loomed-store` additions:**
-- `SyncState` tracking per commit: `unsynced | synced | rebased`
-- `Vault::mark_synced(commit_id)` — update sync state after successful push
+Deferred to Phase 3 Session 2, per the spec §10.2 token lifecycle and audit trail:
+- Token enforcement: `loomed commit --token <token_id>` for non-patient writers, signature/expiry/scope/single-use validation at presentation time
+- `loomed audit` / `loomed audit --entity <participant_id>` — access event log
+- `loomed revoke <token_id>` — early invalidation
 
-### Data Already in Place
+### Test Count
 
-`SyncMetadata` is in every commit from genesis:
-```rust
-pub struct SyncMetadata {
-    pub created_offline: bool,
-    pub synced_at: Option<DateTime<Utc>>,
-    pub pre_sync_previous_hash: Option<CommitHash>,
-    pub pre_sync_commit_id: Option<CommitHash>,
-}
-```
-
-Phase 2 populates these fields. The commit struct does not change.
-
----
-
-## Phase 3 — Consent Tokens + Audit Trail 🔵 Planned
-
-**Spec:** §10, §11.
-
-This phase implements the patient consent model — the mechanism by which patients grant time-bound, scoped, single-use access to institutions.
-
-### What to Build
-
-**Consent token issuance** (`loomed share`):
-- `loomed share <participant_id> --scope <scope> --duration <hours> --purpose <purpose>`
-- Generates a `ConsentToken` signed by the patient's private key
-- Scope: `full_record | record_type:<type> | commit:<id> | date_range:<from>:<to>`
-- Access type: `read` (default) or `write` — strictly separated
-- Writes a `consent_token` commit to the vault for auditability
-
-**Token lifecycle enforcement**:
-- Tokens are single-use — marked `used: true` on first presentation
-- Tokens are time-bounded — `expires_at` enforced at the protocol layer
-- A token without a valid patient signature is unconditionally rejected
-
-**Audit trail** (`loomed audit`):
-- `loomed audit` — display full access event log
-- `loomed audit --entity <participant_id>` — filter by entity
-- Access events are immutable commits of a new record type
-
-**Token revocation** (`loomed revoke`):
-- `loomed revoke <token_id>` — invalidate an active token before expiry
-
-### Types Already in Place
-
-```rust
-pub struct TokenId(pub String);  // "lmt_<alphanumeric>"
-
-pub enum AuthorizationRef {
-    SelfAuthored,
-    ConsentToken { token_id: TokenId },
-}
-```
-
-All existing commits carry `AuthorizationRef::SelfAuthored`. Phase 3 enforces token validation when a commit carries `ConsentToken`.
+| Crate | Before | After |
+|---|---|---|
+| `loomed-core` | 60 | 74 (+13 consent tests, +1 ConsentToken RecordType test) |
+| `loomed-cli` | 51 | 59 (+8 share tests) |
+| `loomed-crypto` | 17 | 17 |
+| `loomed-store` | 18 | 18 |
+| `loomed-sync` | 15 | 15 |
+| **Total** | **161** | **183, 0 failures** |
 
 ---
 
