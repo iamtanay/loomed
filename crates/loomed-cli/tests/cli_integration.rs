@@ -38,7 +38,8 @@
 //! ## Test Coverage
 //!
 //! init (3), status (4), add (5), add -i (7), commit (5), log (3),
-//! show (6), verify (8), full lifecycle (1) — 43 tests total.
+//! show (6), verify (8), remote/sync (11), share (8), full lifecycle (1)
+//! — 59 tests total.
 //!
 //! See spec §20 and coding standards §6.
 
@@ -56,6 +57,10 @@ use tempfile::TempDir;
 /// The format must match the LooMed participant ID grammar:
 /// prefix (LMP-, LMD-, LMI-, LMV-, LMG-) + 10 chars + dash + 2 chars.
 const TEST_PATIENT_ID: &str = "LMP-7XKQR2MNVB-6A";
+
+/// A valid institution participant ID used as a consent token recipient
+/// across `loomed share` tests. Checksum-valid per spec §3.1.
+const TEST_INSTITUTION_ID: &str = "LMI-APL-2MVZK9QXBT-08";
 
 /// The passphrase used by all tests that initialise a vault.
 ///
@@ -1672,4 +1677,231 @@ fn sync_to_flag_overrides_configured_remote() {
         !vault_toml.contains("sync_remote"),
         "vault.toml must not be modified by --to flag"
     );
+}
+
+// ---------------------------------------------------------------------------
+// loomed share
+// ---------------------------------------------------------------------------
+
+/// Spec §10.1: `loomed share` must issue a signed consent token and write
+/// a `consent_token` commit, printing the token_id and scope.
+#[test]
+fn share_issues_token_and_writes_consent_token_commit() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "full_record",
+            "--duration",
+            "4",
+            "--purpose",
+            "claim_verification",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("lmt_"))
+        .stdout(predicate::str::contains("full_record"))
+        .stdout(predicate::str::contains(TEST_INSTITUTION_ID));
+}
+
+/// Spec §10: A consent token issuance must appear in `loomed log` as a
+/// `consent_token` commit, chained after the genesis commit.
+#[test]
+fn share_token_appears_in_log_as_consent_token_commit() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "record_type:lab_result",
+            "--duration",
+            "2",
+            "--purpose",
+            "second_opinion",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("consent_token"))
+        .stdout(predicate::str::contains(format!(
+            "consent token issued to {}",
+            TEST_INSTITUTION_ID
+        )));
+}
+
+/// Spec §10.1: `loomed share --access-type write` must succeed and the
+/// printed token must reflect write access.
+#[test]
+fn share_with_write_access_type_succeeds() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "full_record",
+            "--duration",
+            "4",
+            "--purpose",
+            "lab_upload",
+            "--access-type",
+            "write",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"access_type\": \"write\""));
+}
+
+/// Coding standards §0.6: `loomed share` with a malformed participant ID
+/// must fail before prompting for the passphrase.
+#[test]
+fn share_rejects_invalid_participant_id_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // No LOOMED_PASSPHRASE set — if share incorrectly reads the passphrase
+    // before validating the participant ID, it will block on /dev/tty.
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "share",
+            "not-a-valid-id",
+            "--scope",
+            "full_record",
+            "--duration",
+            "4",
+            "--purpose",
+            "claim_verification",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+/// Coding standards §0.6: `loomed share` with an invalid scope string must
+/// fail before prompting for the passphrase.
+#[test]
+fn share_rejects_invalid_scope_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "not_a_real_scope",
+            "--duration",
+            "4",
+            "--purpose",
+            "claim_verification",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid consent scope"));
+}
+
+/// Spec §10.1: `loomed share` with a non-positive duration must fail
+/// before prompting for the passphrase.
+#[test]
+fn share_rejects_non_positive_duration_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "full_record",
+            "--duration",
+            "0",
+            "--purpose",
+            "claim_verification",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+/// Coding standards §0.6: `loomed share` with an empty purpose must fail
+/// before prompting for the passphrase.
+#[test]
+fn share_rejects_empty_purpose_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "full_record",
+            "--duration",
+            "4",
+            "--purpose",
+            "  ",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("purpose must not be empty"));
+}
+
+/// Coding standards §0.6: `loomed share` with an unknown access type must
+/// fail before prompting for the passphrase.
+#[test]
+fn share_rejects_unknown_access_type_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            "full_record",
+            "--duration",
+            "4",
+            "--purpose",
+            "claim_verification",
+            "--access-type",
+            "delete",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown access type"));
 }

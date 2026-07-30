@@ -22,6 +22,7 @@ pub mod init;
 pub mod log;
 pub mod prompts;
 pub mod remote;
+pub mod share;
 pub mod show;
 pub mod status;
 pub mod sync_cmd;

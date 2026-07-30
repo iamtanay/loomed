@@ -21,6 +21,7 @@
 
 pub mod builder;
 pub mod commit;
+pub mod consent;
 pub mod error;
 pub mod participant;
 pub mod payload;
@@ -31,6 +32,7 @@ pub use builder::{prepare, PendingCommit};
 pub use commit::{
     AuthorizationRef, Commit, CommitHash, ContentHash, RecordType, SyncMetadata, TokenId,
 };
+pub use consent::{AccessType, ConsentScope, ConsentToken, PendingConsentToken, prepare_token};
 pub use error::LooMedError;
 pub use participant::{ParticipantId, ParticipantType};
 pub use payload::{

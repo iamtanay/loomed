@@ -133,4 +133,23 @@ pub enum LooMedError {
         /// The unrecognised record type string.
         record_type: String,
     },
+
+    /// A consent token scope string did not match any known scope format.
+    ///
+    /// Valid formats: `full_record`, `record_type:<type>`, `commit:<commit_id>`.
+    /// See spec §10.1.
+    #[error("invalid consent scope: {scope}")]
+    InvalidConsentScope {
+        /// The unrecognised scope string.
+        scope: String,
+    },
+
+    /// A consent token was requested with a non-positive duration.
+    ///
+    /// `expires_at` must be strictly after `issued_at`. See spec §10.1.
+    #[error("invalid consent token duration: {hours} hours (must be positive)")]
+    InvalidConsentDuration {
+        /// The invalid duration in hours.
+        hours: i64,
+    },
 }

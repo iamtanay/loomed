@@ -22,6 +22,7 @@
 //! - `loomed sync --pull`                  — Fetch commits from the remote
 //! - `loomed sync --resolve`               — Resolve forks via Sync Rebase
 //! - `loomed sync --to <path>`             — Push/pull to/from a specific remote
+//! - `loomed share <participant_id>`       — Issue a consent token to an institution
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
 
@@ -172,6 +173,40 @@ enum Command {
         #[arg(long)]
         to: Option<String>,
     },
+
+    /// Issue a consent token granting an institution scoped, time-bound
+    /// access to the patient's vault.
+    ///
+    /// The token is signed by the patient and written as a `consent_token`
+    /// commit for auditability. There is no delivery channel in this
+    /// phase — the printed token must be handed to the institution
+    /// out of band.
+    ///
+    /// Example: loomed share LMI-APL-2MVZK9QXBT-08 --scope full_record --duration 4 --purpose claim_verification
+    Share {
+        /// The institution's participant ID.
+        participant_id: String,
+
+        /// The scope of access to grant.
+        ///
+        /// Valid values: full_record, record_type:<type>, commit:<commit_id>
+        #[arg(long)]
+        scope: String,
+
+        /// How many hours from now the token remains valid.
+        #[arg(long)]
+        duration: i64,
+
+        /// A short statement of why access was requested.
+        #[arg(long)]
+        purpose: String,
+
+        /// Whether this token grants read or write access.
+        ///
+        /// Valid values: read, write. Defaults to read.
+        #[arg(long, default_value = "read")]
+        access_type: String,
+    },
 }
 
 /// Subcommands for `loomed remote`.
@@ -209,6 +244,13 @@ fn main() {
         Command::Sync { status, pull, resolve, to } => {
             commands::sync_cmd::run(status, pull, resolve, to.as_deref())
         }
+        Command::Share {
+            participant_id,
+            scope,
+            duration,
+            purpose,
+            access_type,
+        } => commands::share::run(&participant_id, &scope, duration, &purpose, &access_type),
     };
 
     if let Err(e) = result {

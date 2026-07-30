@@ -123,6 +123,15 @@ pub enum RecordType {
     /// See spec §12.1.
     KeyRotation,
 
+    /// A consent token issuance event.
+    ///
+    /// Written when a patient issues a [`crate::consent::ConsentToken`] to
+    /// an institution. The commit payload is the signed token itself,
+    /// giving every issuance a permanent, auditable entry in the patient's
+    /// own chain in addition to the token being handed to the institution
+    /// out of band. See spec §10.
+    ConsentToken,
+
     /// A protocol-level vault re-encryption event.
     ///
     /// Written automatically after a key rotation to record that historical
@@ -348,6 +357,14 @@ mod tests {
         let rt = RecordType::RadiologyReport;
         let serialised = serde_json::to_string(&rt).unwrap();
         assert_eq!(serialised, "\"radiology_report\"");
+    }
+
+    /// Spec §10: RecordType::ConsentToken serialises to "consent_token".
+    #[test]
+    fn consent_token_record_type_serialises_to_snake_case() {
+        let rt = RecordType::ConsentToken;
+        let serialised = serde_json::to_string(&rt).unwrap();
+        assert_eq!(serialised, "\"consent_token\"");
     }
 
     /// Spec §10: SelfAuthored authorization serialises correctly.
