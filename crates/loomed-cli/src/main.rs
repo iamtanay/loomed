@@ -11,6 +11,7 @@
 //! - `loomed add`                          — Stage a record for commit (empty payload)
 //! - `loomed add -i`                       — Stage a record with interactive payload prompts
 //! - `loomed commit`                       — Sign and commit the staged record
+//! - `loomed commit --token <token_id>`    — Commit under a consent token instead of self-authoring
 //! - `loomed log`                          — Display the full commit history
 //! - `loomed show <commit_id>`             — Inspect a specific commit by ID
 //! - `loomed status`                       — Show current vault state and staged record
@@ -85,7 +86,17 @@ enum Command {
     ///
     /// Reads .loomed/staged.json, builds a full commit, signs it with
     /// the vault keypair, encrypts it, and writes a .lmc file to disk.
-    Commit,
+    ///
+    /// With --token <token_id>: the commit is authorized by a
+    /// patient-issued consent token instead of being self-authored. The
+    /// token must be found in the chain, unexpired, write-scoped to this
+    /// record type, and not already used (spec §10).
+    Commit {
+        /// Authorize this commit with a consent token issued via
+        /// `loomed share`, instead of self-authoring it.
+        #[arg(long)]
+        token: Option<String>,
+    },
 
     /// Display the full commit history from HEAD to genesis.
     Log,
@@ -231,7 +242,7 @@ fn main() {
         Command::Add { r#type, message, interactive } => {
             commands::add::run(&r#type, &message, interactive)
         }
-        Command::Commit => commands::commit::run(),
+        Command::Commit { token } => commands::commit::run(token.as_deref()),
         Command::Log => commands::log::run(),
         Command::Show { commit_id } => commands::show::run(&commit_id),
         Command::Status => commands::status::run(),

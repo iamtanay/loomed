@@ -152,4 +152,36 @@ pub enum LooMedError {
         /// The invalid duration in hours.
         hours: i64,
     },
+
+    /// A consent token referenced by `--token <token_id>` does not exist
+    /// anywhere in the vault's commit chain.
+    ///
+    /// See spec §10.
+    #[error("consent token not found: {token_id}")]
+    TokenNotFound {
+        /// The token_id that could not be found.
+        token_id: String,
+    },
+
+    /// A consent token's `patient_signature` did not verify against the
+    /// issuing patient's public key.
+    ///
+    /// See spec §10.1 and §10.2.
+    #[error("consent token signature invalid: {token_id}")]
+    TokenSignatureInvalid {
+        /// The token_id whose signature failed verification.
+        token_id: String,
+    },
+
+    /// A consent token was presented for a write it does not authorise —
+    /// wrong access_type, or the record falls outside the token's scope.
+    ///
+    /// See spec §10.1.
+    #[error("consent token {token_id} does not authorise this write: {reason}")]
+    TokenNotAuthorizedForWrite {
+        /// The token_id that was presented.
+        token_id: String,
+        /// Why this token does not authorise the attempted write.
+        reason: String,
+    },
 }

@@ -56,16 +56,22 @@ pub enum ConsentScope {
     Commit(CommitHash),
 }
 
+/// Returns the exact snake_case wire string for a `RecordType` (e.g.
+/// `"lab_result"`), reusing its existing `Serialize` impl rather than
+/// duplicating the type-to-string mapping.
+fn record_type_wire_str(record_type: &RecordType) -> String {
+    serde_json::to_value(record_type)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 impl std::fmt::Display for ConsentScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsentScope::FullRecord => write!(f, "full_record"),
             ConsentScope::RecordType(record_type) => {
-                let type_str = serde_json::to_value(record_type)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default();
-                write!(f, "record_type:{}", type_str)
+                write!(f, "record_type:{}", record_type_wire_str(record_type))
             }
             ConsentScope::Commit(hash) => write!(f, "commit:{}", hash.as_str()),
         }
@@ -123,6 +129,22 @@ impl<'de> Deserialize<'de> for ConsentScope {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl ConsentScope {
+    /// Returns `true` if a new write commit of `record_type` falls within
+    /// this scope.
+    ///
+    /// `Commit(_)` never authorises a new write — it grants access to one
+    /// specific *existing* commit, which is inherently a read-access
+    /// concept. See spec §10.1.
+    pub fn permits_write_of(&self, record_type: &RecordType) -> bool {
+        match self {
+            ConsentScope::FullRecord => true,
+            ConsentScope::RecordType(scoped_type) => scoped_type == record_type,
+            ConsentScope::Commit(_) => false,
+        }
     }
 }
 
@@ -209,6 +231,89 @@ pub struct ConsentToken {
     /// field set to an empty string — the same sign-then-embed pattern
     /// used for commits. See spec §10.1 and §10.2.
     pub patient_signature: String,
+}
+
+impl ConsentToken {
+    /// Verifies `patient_signature` against the issuing patient's public key.
+    ///
+    /// Recomputes the canonical bytes exactly as [`prepare_token`] produced
+    /// them for signing — this token with `patient_signature` cleared.
+    ///
+    /// # Errors
+    ///
+    /// * [`LooMedError::TokenSignatureInvalid`] — The signature does not
+    ///   verify against `public_key_hex`.
+    ///
+    /// See spec §10.1 and §10.2.
+    pub fn verify_signature(&self, public_key_hex: &str) -> Result<(), LooMedError> {
+        let mut unsigned = self.clone();
+        unsigned.patient_signature = String::new();
+
+        let canonical_bytes =
+            serde_json::to_vec(&unsigned).map_err(|e| LooMedError::SerializationFailed {
+                reason: e.to_string(),
+            })?;
+
+        loomed_crypto::verify(public_key_hex, &canonical_bytes, &self.patient_signature).map_err(
+            |_| LooMedError::TokenSignatureInvalid {
+                token_id: self.token_id.as_str().to_string(),
+            },
+        )
+    }
+
+    /// Checks whether this token authorises writing a new commit of
+    /// `record_type` right now.
+    ///
+    /// Checks, in order: signature validity, expiry, access type, and
+    /// scope. Does **not** check single-use state — whether this token has
+    /// already been presented can only be answered by scanning the vault's
+    /// commit chain for an existing commit carrying this token's ID, which
+    /// requires disk I/O this crate does not perform. The caller (
+    /// `loomed-cli`) is responsible for that check.
+    ///
+    /// # Errors
+    ///
+    /// * [`LooMedError::TokenSignatureInvalid`] — See [`Self::verify_signature`].
+    /// * [`LooMedError::TokenExpired`] — `expires_at` is not after `now`.
+    /// * [`LooMedError::TokenNotAuthorizedForWrite`] — The token's
+    ///   `access_type` is `Read`, or `record_type` falls outside its scope.
+    ///
+    /// See spec §10.1 and §10.2.
+    pub fn authorize_write(
+        &self,
+        public_key_hex: &str,
+        record_type: &RecordType,
+        now: DateTime<Utc>,
+    ) -> Result<(), LooMedError> {
+        self.verify_signature(public_key_hex)?;
+
+        if self.expires_at <= now {
+            return Err(LooMedError::TokenExpired {
+                token_id: self.token_id.as_str().to_string(),
+                expired_at: self.expires_at.to_rfc3339(),
+            });
+        }
+
+        if self.access_type != AccessType::Write {
+            return Err(LooMedError::TokenNotAuthorizedForWrite {
+                token_id: self.token_id.as_str().to_string(),
+                reason: "token grants read access, not write".to_string(),
+            });
+        }
+
+        if !self.scope.permits_write_of(record_type) {
+            return Err(LooMedError::TokenNotAuthorizedForWrite {
+                token_id: self.token_id.as_str().to_string(),
+                reason: format!(
+                    "scope {} does not permit record type {}",
+                    self.scope,
+                    record_type_wire_str(record_type)
+                ),
+            });
+        }
+
+        Ok(())
+    }
 }
 
 /// A partially assembled consent token awaiting the patient's signature.
@@ -523,5 +628,148 @@ mod tests {
         let canonical_bytes = pending.canonical_bytes.clone();
 
         assert!(verify(&other_keypair.public_key_hex(), &canonical_bytes, &signature).is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // Write enforcement: ConsentScope::permits_write_of, ConsentToken::
+    // verify_signature, ConsentToken::authorize_write
+    // -----------------------------------------------------------------
+
+    /// Builds a fully signed write-access token for enforcement tests.
+    fn signed_write_token(
+        keypair: &loomed_crypto::LooMedKeypair,
+        scope: ConsentScope,
+        duration_hours: i64,
+    ) -> ConsentToken {
+        let pending = prepare_token(
+            patient_id(),
+            institution_id(),
+            scope,
+            "lab_upload".to_string(),
+            AccessType::Write,
+            duration_hours,
+        )
+        .unwrap();
+        let signature = sign(keypair, &pending.canonical_bytes);
+        pending.finalise(signature)
+    }
+
+    /// Spec §10.1: `full_record` scope permits a write of any record type.
+    #[test]
+    fn full_record_scope_permits_any_write() {
+        let scope = ConsentScope::FullRecord;
+        assert!(scope.permits_write_of(&RecordType::LabResult));
+        assert!(scope.permits_write_of(&RecordType::Procedure));
+    }
+
+    /// Spec §10.1: `record_type:<type>` scope permits only a matching write.
+    #[test]
+    fn record_type_scope_permits_only_matching_write() {
+        let scope = ConsentScope::RecordType(RecordType::LabResult);
+        assert!(scope.permits_write_of(&RecordType::LabResult));
+        assert!(!scope.permits_write_of(&RecordType::Prescription));
+    }
+
+    /// Spec §10.1: `commit:<id>` scope never permits a new write — it
+    /// grants access to one existing commit, a read-access concept.
+    #[test]
+    fn commit_scope_never_permits_a_write() {
+        let scope = ConsentScope::Commit(CommitHash("sha256:abc123".to_string()));
+        assert!(!scope.permits_write_of(&RecordType::LabResult));
+    }
+
+    /// Spec §10.1–§10.2: A validly signed write token authorises a matching write.
+    #[test]
+    fn valid_write_token_authorizes_matching_write() {
+        let keypair = generate_keypair();
+        let token = signed_write_token(&keypair, ConsentScope::FullRecord, 4);
+
+        let result = token.authorize_write(&keypair.public_key_hex(), &RecordType::LabResult, Utc::now());
+        assert!(result.is_ok());
+    }
+
+    /// Spec §10.2: A tampered token must fail signature verification.
+    #[test]
+    fn tampered_token_fails_signature_verification() {
+        let keypair = generate_keypair();
+        let mut token = signed_write_token(&keypair, ConsentScope::FullRecord, 4);
+        token.purpose = "tampered".to_string();
+
+        let result = token.verify_signature(&keypair.public_key_hex());
+        assert!(matches!(
+            result,
+            Err(LooMedError::TokenSignatureInvalid { .. })
+        ));
+    }
+
+    /// Spec §10.2: An expired token must be rejected regardless of scope
+    /// or signature validity.
+    #[test]
+    fn expired_token_is_rejected() {
+        let keypair = generate_keypair();
+        let token = signed_write_token(&keypair, ConsentScope::FullRecord, 4);
+
+        // "now" is after expires_at, simulating presentation past expiry.
+        let after_expiry = token.expires_at + Duration::seconds(1);
+        let result = token.authorize_write(&keypair.public_key_hex(), &RecordType::LabResult, after_expiry);
+        assert!(matches!(result, Err(LooMedError::TokenExpired { .. })));
+    }
+
+    /// Spec §10.1: A read-access token must not authorise a write.
+    #[test]
+    fn read_access_token_does_not_authorize_write() {
+        let keypair = generate_keypair();
+        let pending = prepare_token(
+            patient_id(),
+            institution_id(),
+            ConsentScope::FullRecord,
+            "claim_verification".to_string(),
+            AccessType::Read,
+            4,
+        )
+        .unwrap();
+        let signature = sign(&keypair, &pending.canonical_bytes);
+        let token = pending.finalise(signature);
+
+        let result = token.authorize_write(&keypair.public_key_hex(), &RecordType::LabResult, Utc::now());
+        assert!(matches!(
+            result,
+            Err(LooMedError::TokenNotAuthorizedForWrite { .. })
+        ));
+    }
+
+    /// Spec §10.1: A token scoped to one record type must not authorise a
+    /// write of a different record type.
+    #[test]
+    fn out_of_scope_record_type_does_not_authorize_write() {
+        let keypair = generate_keypair();
+        let token = signed_write_token(
+            &keypair,
+            ConsentScope::RecordType(RecordType::Prescription),
+            4,
+        );
+
+        let result = token.authorize_write(&keypair.public_key_hex(), &RecordType::LabResult, Utc::now());
+        assert!(matches!(
+            result,
+            Err(LooMedError::TokenNotAuthorizedForWrite { .. })
+        ));
+    }
+
+    /// Spec §10.1: A `commit:<id>` scoped token must never authorise a write.
+    #[test]
+    fn commit_scoped_token_does_not_authorize_write() {
+        let keypair = generate_keypair();
+        let token = signed_write_token(
+            &keypair,
+            ConsentScope::Commit(CommitHash("sha256:abc123".to_string())),
+            4,
+        );
+
+        let result = token.authorize_write(&keypair.public_key_hex(), &RecordType::LabResult, Utc::now());
+        assert!(matches!(
+            result,
+            Err(LooMedError::TokenNotAuthorizedForWrite { .. })
+        ));
     }
 }

@@ -38,8 +38,8 @@
 //! ## Test Coverage
 //!
 //! init (3), status (4), add (5), add -i (7), commit (5), log (3),
-//! show (6), verify (8), remote/sync (11), share (8), full lifecycle (1)
-//! — 59 tests total.
+//! show (6), verify (8), remote/sync (11), share (8),
+//! commit --token (9), full lifecycle (1) — 68 tests total.
 //!
 //! See spec §20 and coding standards §6.
 
@@ -110,6 +110,46 @@ fn read_head(dir: &TempDir) -> String {
         .expect("HEAD file should exist after at least one commit")
         .trim()
         .to_string()
+}
+
+/// Runs `loomed share` with the given scope and access type, returning the
+/// issued token_id parsed from stdout.
+///
+/// Used as a precondition helper by `loomed commit --token` tests, which
+/// need a real, chain-issued token_id to present.
+///
+/// # Panics
+///
+/// Panics if `loomed share` fails or its output has no token_id line.
+fn issue_token(dir: &TempDir, scope: &str, access_type: &str) -> String {
+    let output = Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args([
+            "share",
+            TEST_INSTITUTION_ID,
+            "--scope",
+            scope,
+            "--duration",
+            "4",
+            "--purpose",
+            "test_purpose",
+            "--access-type",
+            access_type,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "loomed share must succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find(|line| line.contains("token_id") && line.contains("lmt_"))
+        .and_then(|line| line.split(':').nth(1))
+        .map(|s| s.trim().to_string())
+        .expect("share output must contain a token_id line")
 }
 
 // ---------------------------------------------------------------------------
@@ -1904,4 +1944,259 @@ fn share_rejects_unknown_access_type_before_passphrase() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown access type"));
+}
+
+// ---------------------------------------------------------------------------
+// loomed commit --token
+// ---------------------------------------------------------------------------
+
+/// Spec §10.1–§10.2: `loomed commit --token <token_id>` with a valid,
+/// unexpired, write-scoped token must succeed and print the token_id.
+#[test]
+fn commit_with_valid_write_token_succeeds() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&token_id));
+}
+
+/// Spec §10: A commit written under a token must show
+/// `consent_token(<token_id>)` as its authorization in `loomed show`,
+/// distinguishing it from a self-authored commit.
+#[test]
+fn commit_with_token_shows_consent_token_authorization() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .success();
+
+    let commit_id = read_head(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["show", &commit_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "consent_token({})",
+            token_id
+        )));
+}
+
+/// Spec §10.2: A token presented a second time must be rejected — tokens
+/// are single-use, permanently, regardless of remaining validity window.
+#[test]
+fn commit_with_already_used_token_fails_on_second_presentation() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "first record"])
+        .assert()
+        .success();
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "second record"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already been used"));
+}
+
+/// Spec §10: `loomed commit --token` with a token_id that does not exist
+/// in the chain must fail with a clear error.
+#[test]
+fn commit_with_nonexistent_token_fails() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", "lmt_doesnotexist00000000"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("consent token not found"));
+}
+
+/// Coding standards §0.6: `loomed commit --token` with a malformed
+/// token_id must fail before prompting for the passphrase.
+#[test]
+fn commit_with_malformed_token_id_fails_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["commit", "--token", "not-a-token"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("lmt_"));
+}
+
+/// Spec §10.1: A read-access token must not authorize a commit — read and
+/// write tokens are strictly separated.
+#[test]
+fn commit_with_read_only_token_fails() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "read");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not authorise this write"));
+}
+
+/// Spec §10.1: A token scoped to a different record type must not
+/// authorize a write of the staged record's actual type.
+#[test]
+fn commit_with_out_of_scope_token_fails() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "record_type:prescription", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not authorise this write"));
+}
+
+/// Spec §10.1: A token scoped to a matching record type must succeed.
+#[test]
+fn commit_with_matching_scoped_token_succeeds() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "record_type:lab_result", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .success();
+}
+
+/// Spec §10.1: A `commit:<id>` scoped token must never authorize a new
+/// write — it grants access to one existing commit, a read-access concept.
+#[test]
+fn commit_with_commit_scoped_token_fails() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let genesis_id = read_head(&dir);
+    let token_id = issue_token(&dir, &format!("commit:{}", genesis_id), "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not authorise this write"));
 }
