@@ -611,7 +611,7 @@ mod tests {
                 "chain continuity violated at position {}: expected {:?}, got {:?}",
                 i,
                 Some(&result[i - 1].commit_id),
-                &result[i].previous_hash
+                result[i].previous_hash
             );
         }
     }
