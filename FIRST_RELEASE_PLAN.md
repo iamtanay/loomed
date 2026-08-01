@@ -70,11 +70,11 @@ Numbering continues from where `PLAN.md` left off (Phase 2 Session 2 complete, 1
 - Added `--access-type` beyond the spec §20 CLI signature — otherwise there'd be no way to issue a write token at all, and R3 needs one to test enforcement against
 - **Caught during implementation**: an early cut validated everything except `duration_hours` before the passphrase prompt, which hung `cargo test` on the fail-fast test for it (blocked on a passphrase read with no terminal attached). Fixed before landing — full detail in `PLAN.md`'s Phase 3 Session 1 entry. 183 tests passing, 0 failures.
 
-### R3 — Consent Token Enforcement (Phase 3, part 2)
-- `loomed commit --token <token_id>` path for non-patient participants writing under a token
-- Token validated against: signature, expiry, scope, single-use state
-- Every commit written under a token carries `AuthorizationRef::ConsentToken { token_id }`
-- Token marked `used: true` on first presentation, permanently, regardless of remaining validity window
+### R3 — Consent Token Enforcement ✅ Complete (Phase 3, part 2)
+- `loomed commit --token <token_id>` — validates the token against signature, expiry, access type, and scope, then writes the commit with `AuthorizationRef::ConsentToken { token_id }`
+- Single-use enforced by scanning the chain for an existing commit already carrying the token's ID — no separate "used" marker commit needed, the write itself is the permanent record
+- **Scope note carried over from R2, still true here**: there's only one identity in the v1 CLI (the patient's own key), so `--token` proves every enforcement rule works but the commit is still patient-signed — a real institution-signed write needs Phase 4/5 identity work. Stated explicitly in code, not glossed over.
+- 18 new tests (9 `loomed-core` write-authorization, 9 `loomed-cli` integration). 201 tests passing, 0 failures. Full detail in `PLAN.md`'s Phase 3 Session 2 entry.
 
 ### R4 — Audit Trail + Revocation (Phase 3, part 3)
 - Every token presentation writes an immutable `access_event` commit

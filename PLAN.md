@@ -2,7 +2,7 @@
 
 This file tracks what has been built, what is next, and what is coming in later phases. It is the ground truth for where we are in the protocol implementation.
 
-**Current status: Phase 3 Session 1 complete (consent token issuance). 183 tests passing.**
+**Current status: Phase 3 Session 2 complete (consent token enforcement). 201 tests passing.**
 
 ---
 
@@ -250,6 +250,47 @@ Deferred to Phase 3 Session 2, per the spec §10.2 token lifecycle and audit tra
 | `loomed-store` | 18 | 18 |
 | `loomed-sync` | 15 | 15 |
 | **Total** | **161** | **183, 0 failures** |
+
+---
+
+## Phase 3 Session 2 ✅ Complete — Consent Token Enforcement
+
+R3 of the [First Release Plan](FIRST_RELEASE_PLAN.md). Spec §10.1–§10.2.
+
+### What Was Built
+
+**`loomed-core` — write-authorization on `ConsentToken`**:
+- `ConsentScope::permits_write_of(&record_type) -> bool` — `FullRecord` permits anything, `RecordType(t)` permits only a matching write, `Commit(_)` never permits a write (it grants access to one *existing* commit — inherently a read concept, not something a new write can satisfy)
+- `ConsentToken::verify_signature(public_key_hex)` — recomputes the canonical bytes (this token with `patient_signature` cleared) exactly as `prepare_token` produced them, verifies against the key
+- `ConsentToken::authorize_write(public_key_hex, record_type, now)` — runs signature → expiry → access_type → scope checks in order, returning the first failure. Deliberately does **not** check single-use state: answering "has this token already been presented" requires scanning the vault's commit chain, which is disk I/O this crate never performs by design. That check is `loomed-cli`'s job.
+- 3 new error variants: `TokenNotFound`, `TokenSignatureInvalid`, `TokenNotAuthorizedForWrite { reason }`
+- 9 new tests covering every branch of scope permission and `authorize_write`
+
+**`loomed-cli` — `loomed commit --token <token_id>`**:
+- Validates the token_id format (`lmt_` prefix) before opening the vault, per coding standards §0.6
+- After the passphrase is available, does a single pass over the full chain from HEAD to genesis: finds the `consent_token` commit that issued this token_id, and separately checks whether any *existing* commit already carries `AuthorizationRef::ConsentToken` with this token_id
+- **Single-use enforcement needed no new commit type.** A token is "used" the moment any commit in the chain carries its ID as authorization — the write commit itself, once written, is the permanent, tamper-evident usage marker. No separate access-event commit was needed for this; that's still true audit-trail territory (Session 3)
+- On success, the record commit is written with `authorization_ref: ConsentToken { token_id }` instead of `SelfAuthored`
+- 9 new integration tests: valid write succeeds, authorization visible in `loomed show`, reuse rejected, nonexistent token rejected, malformed token_id rejected before passphrase, read-only token rejected, out-of-scope record type rejected, matching scope succeeds, commit-scoped token rejected
+
+**Known v1 limitation, stated explicitly in `commit.rs`'s module doc**: there is still only one identity in this CLI — the patient's own vault keypair. `--token` exercises every spec §10 enforcement rule (signature, expiry, access type, scope, single-use), but the commit is still signed by the patient's own key; `author_id`/`authored_by` are not set to the institution's participant ID, because that would mean claiming a signature that doesn't exist. A real cross-participant write — where the institution signs with its own key — needs per-participant identity, which is Phase 4/5 territory, not something to fake here.
+
+### What Was NOT Built (this session)
+
+Deferred to Phase 3 Session 3:
+- `loomed audit` / `loomed audit --entity <participant_id>` — access event log (spec §11)
+- `loomed revoke <token_id>` — early invalidation before expiry
+
+### Test Count
+
+| Crate | Before | After |
+|---|---|---|
+| `loomed-core` | 74 | 83 (+9 write-authorization tests) |
+| `loomed-cli` | 59 | 68 (+9 commit --token tests) |
+| `loomed-crypto` | 17 | 17 |
+| `loomed-store` | 18 | 18 |
+| `loomed-sync` | 15 | 15 |
+| **Total** | **183** | **201, 0 failures** |
 
 ---
 
