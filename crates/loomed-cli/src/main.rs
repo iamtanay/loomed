@@ -24,6 +24,11 @@
 //! - `loomed sync --resolve`               — Resolve forks via Sync Rebase
 //! - `loomed sync --to <path>`             — Push/pull to/from a specific remote
 //! - `loomed share <participant_id>`       — Issue a consent token to an institution
+//! - `loomed revoke <token_id>`             — Invalidate a token before its natural expiry
+//! - `loomed audit`                         — Display the consent token audit trail
+//! - `loomed audit --entity <id>`           — Filter the audit trail to one recipient
+//! - `loomed key status`                   — Show the current identity tier and public key
+//! - `loomed key rotate`                   — Rotate the vault's signing key
 //!
 //! See the LooMed Protocol Specification for the full CLI reference (spec §20).
 
@@ -218,6 +223,57 @@ enum Command {
         #[arg(long, default_value = "read")]
         access_type: String,
     },
+
+    /// Invalidate an active consent token before its natural expiry.
+    ///
+    /// Writes a `token_revocation` commit referencing the token. This
+    /// only blocks future presentation of the token — it cannot undo a
+    /// write that already happened under it.
+    ///
+    /// Example: loomed revoke lmt_7x9k2mP3qRnBzWv
+    Revoke {
+        /// The token_id to revoke, including the "lmt_" prefix.
+        token_id: String,
+    },
+
+    /// Display the consent token audit trail: every token this vault has
+    /// issued, and its current status (active, used, expired, or revoked).
+    ///
+    /// With --entity <participant_id>: only show tokens issued to that
+    /// participant.
+    ///
+    /// Example: loomed audit --entity LMI-APL-2MVZK9QXBT-08
+    Audit {
+        /// Filter to tokens issued to this participant ID.
+        #[arg(long)]
+        entity: Option<String>,
+    },
+
+    /// Identity and key management (spec §4, §12.1).
+    Key {
+        #[command(subcommand)]
+        subcommand: KeySubcommand,
+    },
+}
+
+/// Subcommands for `loomed key`.
+#[derive(clap::Subcommand)]
+enum KeySubcommand {
+    /// Show the vault's current identity tier and public key.
+    ///
+    /// v1.0 always reports "software_passphrase" (Tier 0) — the signing
+    /// key is derived deterministically from the vault passphrase.
+    Status,
+
+    /// Rotate the vault's signing key.
+    ///
+    /// Writes a self-signed key_rotation commit (the old key attests to
+    /// the new public key), then switches all future signing operations
+    /// to the new key. Every still-active consent token is explicitly
+    /// revoked. The vault passphrase and encryption key are unchanged —
+    /// historical records remain readable exactly as before. See spec
+    /// §12.1.
+    Rotate,
 }
 
 /// Subcommands for `loomed remote`.
@@ -262,6 +318,14 @@ fn main() {
             purpose,
             access_type,
         } => commands::share::run(&participant_id, &scope, duration, &purpose, &access_type),
+        Command::Revoke { token_id } => commands::revoke::run(&token_id),
+        Command::Audit { entity } => commands::audit::run(entity.as_deref()),
+        Command::Key {
+            subcommand: KeySubcommand::Status,
+        } => commands::key::status(),
+        Command::Key {
+            subcommand: KeySubcommand::Rotate,
+        } => commands::key::rotate(),
     };
 
     if let Err(e) = result {

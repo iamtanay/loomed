@@ -19,7 +19,7 @@
 //! 3. Its previous_hash matches the commit_id of the preceding commit in the chain
 //! 4. The genesis commit has previous_hash = None
 
-use crate::commit::{Commit, CommitHash};
+use crate::commit::{Commit, CommitHash, RecordType};
 use crate::error::LooMedError;
 
 /// The result of verifying a single commit.
@@ -147,6 +147,45 @@ pub fn verify_commit(
     })
 }
 
+/// Determines which public key was active to sign each commit in
+/// `commits`, given the key that signed `commits[0]` and any embedded
+/// key rotations.
+///
+/// Walks forward from genesis. The genesis commit's own `KeyRotation`
+/// payload only carries `public_key` (the key that signed it, matching
+/// `genesis_public_key`), so it does not shift the active key. A later
+/// self-signed rotation (`loomed key rotate`) carries `new_public_key` in
+/// its payload — once that commit is verified against the key active
+/// *before* it (the old key, which signs the rotation attesting to the
+/// new one), every subsequent commit is verified against `new_public_key`
+/// instead. See spec §12.1 and `FIRST_RELEASE_PLAN.md` R6.
+///
+/// # Arguments
+///
+/// * `commits` — Commits in chain order, genesis first.
+/// * `genesis_public_key` — The public key that signed `commits[0]`.
+///
+/// # Returns
+///
+/// One public key per commit, same order and length as `commits` — the
+/// key that must verify each commit at that position.
+pub fn resolve_signing_keys(commits: &[Commit], genesis_public_key: &str) -> Vec<String> {
+    let mut active_key = genesis_public_key.to_string();
+    let mut keys = Vec::with_capacity(commits.len());
+
+    for commit in commits {
+        keys.push(active_key.clone());
+
+        if commit.record_type == RecordType::KeyRotation {
+            if let Some(new_key) = commit.payload.get("new_public_key").and_then(|v| v.as_str()) {
+                active_key = new_key.to_string();
+            }
+        }
+    }
+
+    keys
+}
+
 /// Verifies the full hash chain from genesis to the provided HEAD commit.
 ///
 /// Iterates through the commits in chain order, verifying each commit's
@@ -158,8 +197,11 @@ pub fn verify_commit(
 /// * `commits` — All commits in the chain, in order from genesis (index 0)
 ///   to HEAD (last index). Must be pre-sorted by the caller using
 ///   previous_hash chain traversal.
-/// * `author_public_key` — The ed25519 public key of the vault owner.
-///   In Phase 1 all commits are self-authored so one key covers the chain.
+/// * `author_public_key` — The ed25519 public key that signed the genesis
+///   commit (`commits[0]`). If the chain contains one or more `loomed key
+///   rotate` commits, [`resolve_signing_keys`] is used internally to
+///   verify each subsequent commit against the key active at that point
+///   in the chain, rather than this one key uniformly. See spec §12.1.
 ///
 /// # Returns
 ///
@@ -175,13 +217,15 @@ pub fn verify_chain(
     commits: &[Commit],
     author_public_key: &str,
 ) -> Result<ChainVerification, LooMedError> {
+    let signing_keys = resolve_signing_keys(commits, author_public_key);
     let mut results = Vec::with_capacity(commits.len());
     let mut chain_valid = true;
     let mut first_failure: Option<CommitHash> = None;
 
     for (i, commit) in commits.iter().enumerate() {
-        // Verify this commit's hash and signature
-        let verification = verify_commit(commit, author_public_key)?;
+        // Verify this commit's hash and signature against the key that
+        // was active at this position in the chain (see resolve_signing_keys).
+        let verification = verify_commit(commit, &signing_keys[i])?;
 
         if !verification.is_valid && first_failure.is_none() {
             first_failure = Some(commit.commit_id.clone());
@@ -355,5 +399,96 @@ mod tests {
 
         assert!(!result.chain_valid);
         assert!(result.first_failure.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_signing_keys / verify_chain with key rotation —
+    // FIRST_RELEASE_PLAN.md R6
+    // -----------------------------------------------------------------------
+
+    /// Builds a `KeyRotation` commit signed by `old_keypair`, attesting to
+    /// `new_keypair`'s public key — the same shape `loomed key rotate` writes.
+    fn build_rotation_commit(
+        previous_hash: Option<CommitHash>,
+        old_keypair: &loomed_crypto::LooMedKeypair,
+        new_keypair: &loomed_crypto::LooMedKeypair,
+    ) -> Commit {
+        let payload = serde_json::json!({
+            "old_public_key": old_keypair.public_key_hex(),
+            "new_public_key": new_keypair.public_key_hex(),
+        });
+
+        let pending = builder::prepare(
+            test_patient_id(),
+            test_patient_id(),
+            test_patient_id(),
+            crate::commit::RecordType::KeyRotation,
+            "key rotation".to_string(),
+            payload,
+            previous_hash,
+            AuthorizationRef::SelfAuthored,
+        )
+        .unwrap();
+
+        let signature = sign(old_keypair, &pending.canonical_bytes);
+        pending.finalise(signature).unwrap()
+    }
+
+    /// FIRST_RELEASE_PLAN.md R6: resolve_signing_keys must keep the genesis
+    /// key active until a rotation commit, then switch to the new key for
+    /// every commit that follows it — not the rotation commit itself.
+    #[test]
+    fn resolve_signing_keys_switches_after_rotation_commit() {
+        let old_keypair = generate_keypair();
+        let new_keypair = generate_keypair();
+
+        let genesis = build_commit(None, &old_keypair);
+        let rotation = build_rotation_commit(Some(genesis.commit_id.clone()), &old_keypair, &new_keypair);
+        let post_rotation = build_commit(Some(rotation.commit_id.clone()), &new_keypair);
+
+        let commits = vec![genesis, rotation, post_rotation];
+        let keys = resolve_signing_keys(&commits, &old_keypair.public_key_hex());
+
+        assert_eq!(keys[0], old_keypair.public_key_hex(), "genesis verified with old key");
+        assert_eq!(keys[1], old_keypair.public_key_hex(), "rotation commit itself verified with old key");
+        assert_eq!(keys[2], new_keypair.public_key_hex(), "commit after rotation verified with new key");
+    }
+
+    /// FIRST_RELEASE_PLAN.md R6: A full chain spanning a key rotation must
+    /// pass verify_chain end-to-end, even though two different keys signed it.
+    #[test]
+    fn verify_chain_passes_across_a_key_rotation() {
+        let old_keypair = generate_keypair();
+        let new_keypair = generate_keypair();
+
+        let genesis = build_commit(None, &old_keypair);
+        let rotation = build_rotation_commit(Some(genesis.commit_id.clone()), &old_keypair, &new_keypair);
+        let post_rotation = build_commit(Some(rotation.commit_id.clone()), &new_keypair);
+
+        let commits = vec![genesis, rotation, post_rotation];
+        let result = verify_chain(&commits, &old_keypair.public_key_hex()).unwrap();
+
+        assert!(result.chain_valid);
+        assert_eq!(result.commit_count, 3);
+    }
+
+    /// FIRST_RELEASE_PLAN.md R6: A commit written after rotation but signed
+    /// with the OLD key (as if the old key were still in use) must fail
+    /// verification — rotation must actually retire the old key.
+    #[test]
+    fn commit_after_rotation_signed_with_old_key_fails_verification() {
+        let old_keypair = generate_keypair();
+        let new_keypair = generate_keypair();
+
+        let genesis = build_commit(None, &old_keypair);
+        let rotation = build_rotation_commit(Some(genesis.commit_id.clone()), &old_keypair, &new_keypair);
+        // Wrong: signed with the old key after rotation.
+        let post_rotation = build_commit(Some(rotation.commit_id.clone()), &old_keypair);
+
+        let commits = vec![genesis, rotation, post_rotation];
+        let result = verify_chain(&commits, &old_keypair.public_key_hex()).unwrap();
+
+        assert!(!result.chain_valid);
+        assert_eq!(result.first_failure, Some(commits[2].commit_id.clone()));
     }
 }

@@ -40,4 +40,14 @@ pub enum CryptoError {
         /// The reason key derivation failed.
         reason: String,
     },
+
+    /// A BIP-39 recovery phrase failed to parse.
+    ///
+    /// Returned when a mnemonic string is not valid BIP-39 English wordlist
+    /// text with a correct checksum. See spec §4 (Tier 0 identity recovery).
+    #[error("invalid recovery phrase: {reason}")]
+    InvalidMnemonic {
+        /// The reason the phrase failed to parse.
+        reason: String,
+    },
 }

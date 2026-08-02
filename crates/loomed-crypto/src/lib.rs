@@ -19,11 +19,15 @@
 //! - Identity provider abstraction (spec §4, future: `loomed-idp`)
 
 pub mod hash;
+pub mod identity;
 pub mod keys;
 pub mod encrypt;
 pub mod error;
 
 pub use error::CryptoError;
 pub use hash::{compute_commit_hash, compute_content_hash};
-pub use keys::{derive_keypair, generate_keypair, sign, verify, LooMedKeypair};
+pub use identity::{
+    mnemonic_from_seed, seed_from_mnemonic, IdentityProvider, PassphraseIdentityProvider,
+};
+pub use keys::{derive_keypair, generate_keypair, keypair_from_seed, sign, verify, LooMedKeypair};
 pub use encrypt::{derive_key, encrypt, decrypt};

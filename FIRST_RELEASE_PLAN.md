@@ -76,21 +76,24 @@ Numbering continues from where `PLAN.md` left off (Phase 2 Session 2 complete, 1
 - **Scope note carried over from R2, still true here**: there's only one identity in the v1 CLI (the patient's own key), so `--token` proves every enforcement rule works but the commit is still patient-signed — a real institution-signed write needs Phase 4/5 identity work. Stated explicitly in code, not glossed over.
 - 18 new tests (9 `loomed-core` write-authorization, 9 `loomed-cli` integration). 201 tests passing, 0 failures. Full detail in `PLAN.md`'s Phase 3 Session 2 entry.
 
-### R4 — Audit Trail + Revocation (Phase 3, part 3)
-- Every token presentation writes an immutable `access_event` commit
-- `loomed audit` / `loomed audit --entity <participant_id>`
-- `loomed revoke <token_id>` — invalidates an active token before expiry
+### R4 — Audit Trail + Revocation ✅ Complete (Phase 3, part 3)
+- `loomed audit` / `loomed audit --entity <participant_id>` — one entry per issued token (active/used/expired/revoked), derived from the chain rather than a separate `access_event` commit type
+- `loomed revoke <token_id>` — writes a `token_revocation` commit; a revoked token is rejected by `loomed commit --token`
+- **Scope note**: not literally spec §11's `access_event` schema — `accessed_by_name` needs the participant registry (Phase 5) and `records_accessed` only matters once a token can be presented more than once, which single-use v1 tokens never are. Full detail in `PLAN.md`'s Phase 3 Session 3 entry.
+- **Phase 3 is now fully done** — issuance, enforcement, audit, and revocation all work end-to-end. 213 tests passing, 0 failures.
 
-### R5 — Identity Provider Trait + Tier 0 (Phase 4-lite, part 1)
+### R5 — Identity Provider Trait + Tier 0 ✅ Complete (Phase 4-lite, part 1)
 - `IdentityProvider` trait in `loomed-crypto`
 - `PassphraseIdentityProvider` implementation wrapping existing `derive_keypair`
 - BIP-39 recovery mnemonic generated and displayed at `loomed init`, with explicit confirmation gate
 - `loomed key status` — shows current tier (`software_passphrase` for v1) and public key
+- **Scope note surfaced during implementation**: the mnemonic's entropy *is* the ed25519 signing key seed directly (24 words = 256 bits = 32 bytes), not a hash or wrapper around it — recovery is a lossless round trip, and independent of the vault passphrase, exactly as the plan requires. Full detail in `PLAN.md`'s Phase 4-lite Session 1 entry. 227 tests passing, 0 failures.
 
-### R6 — Key Rotation (Phase 4-lite, part 2)
-- `loomed key rotate` — self-signed `key_rotation` commit
-- Invalidates active consent tokens issued under the old key (ties into R4's token store)
-- Explicit doc note (README + `loomed key status` output) that historical `.lmc` files remain encrypted under the pre-rotation key — re-encryption is a documented post-v1 item, not silently skipped
+### R6 — Key Rotation ✅ Complete (Phase 4-lite, part 2)
+- `loomed key rotate` — self-signed `key_rotation` commit, old key attests to the new public key
+- Invalidates active consent tokens issued under the old key by writing explicit `token_revocation` commits (reuses R4's `token_chain` scan) — auditable, not just an incidental signature mismatch
+- Explicit doc note (`loomed key rotate` output + `commands/key.rs` module doc) that historical `.lmc` files remain encrypted under the pre-rotation key — re-encryption is a documented post-v1 item, not silently skipped
+- **Blast radius wider than originally scoped**: a naive rotation that changed the passphrase-derived AES key would have made every historical commit undecryptable. Fixed by decoupling the signing key from the encryption key — a new `signing_salt` vault.toml field independent of `argon2_salt`, which now never changes. This also required teaching `loomed-core::verify_chain` to resolve a different public key per chain segment (`resolve_signing_keys`), since a rotated chain is no longer signed by one uniform key. Full detail in `PLAN.md`'s Phase 4-lite Session 2 entry. 240 tests passing, 0 failures.
 
 ### R7 — Participant Registry, Local + Unverified (Phase 5-lite)
 - `loomed-registry` crate (new)

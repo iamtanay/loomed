@@ -184,4 +184,21 @@ pub enum LooMedError {
         /// Why this token does not authorise the attempted write.
         reason: String,
     },
+
+    /// A consent token was presented after it was revoked via `loomed revoke`.
+    ///
+    /// Revocation is permanent — a revoked token can never be presented
+    /// again, even if it has not yet reached its natural expiry.
+    #[error("consent token {token_id} was revoked")]
+    TokenRevoked {
+        /// The token_id that was presented.
+        token_id: String,
+    },
+
+    /// `loomed revoke` was run against a token that was already revoked.
+    #[error("consent token {token_id} was already revoked")]
+    TokenAlreadyRevoked {
+        /// The token_id that was already revoked.
+        token_id: String,
+    },
 }

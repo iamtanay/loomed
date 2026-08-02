@@ -40,4 +40,6 @@ pub use payload::{
     RadiologyReportPayload, RecordPayload, ReferenceRange, TeamMember, VaccinationPayload,
 };
 pub use rebase::sync_rebase;
-pub use verify::{verify_chain, verify_commit, ChainVerification, CommitVerification};
+pub use verify::{
+    resolve_signing_keys, verify_chain, verify_commit, ChainVerification, CommitVerification,
+};

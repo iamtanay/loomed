@@ -48,6 +48,39 @@ impl LooMedKeypair {
     pub fn public_key_hex(&self) -> String {
         format!("ed25519:{}", hex::encode(self.verifying_key.as_bytes()))
     }
+
+    /// Returns the raw 32-byte ed25519 signing key seed.
+    ///
+    /// Exists solely so [`crate::identity::PassphraseIdentityProvider`] can
+    /// encode it as a BIP-39 recovery mnemonic (spec §4, Tier 0 recovery).
+    /// Callers must never log or persist this value outside that one-time
+    /// display. See coding standards §0.4.
+    pub fn signing_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+}
+
+/// Reconstructs a keypair directly from a raw 32-byte ed25519 seed.
+///
+/// Used only to recover a [`LooMedKeypair`] from a BIP-39 recovery
+/// mnemonic's entropy (see [`crate::identity::seed_from_mnemonic`]) — the
+/// mnemonic's entropy *is* this seed, so recovery is a direct
+/// reconstruction, not a fresh derivation. See spec §4, Tier 0 recovery.
+///
+/// # Arguments
+///
+/// * `seed` — The raw 32-byte ed25519 signing key seed.
+///
+/// # Returns
+///
+/// The [`LooMedKeypair`] that `seed` encodes.
+pub fn keypair_from_seed(seed: &[u8; 32]) -> LooMedKeypair {
+    let signing_key = SigningKey::from_bytes(seed);
+    let verifying_key = signing_key.verifying_key();
+    LooMedKeypair {
+        signing_key,
+        verifying_key,
+    }
 }
 
 /// Generates a new ed25519 keypair using a cryptographically secure RNG.

@@ -7,14 +7,19 @@
 //! 2. Prompts for a vault passphrase (twice, to confirm)
 //! 3. Generates a random Argon2id salt
 //! 4. Derives a deterministic ed25519 keypair from passphrase + salt
-//! 5. Initialises the vault on disk via loomed-store
-//! 6. Writes the genesis commit to the vault
-//! 7. Prints the public key and participant ID to the terminal
+//! 5. Generates a 24-word BIP-39 recovery mnemonic from the signing key
+//!    seed, displays it once, and requires explicit confirmation before
+//!    anything is written to disk (spec §4, Tier 0 recovery — see
+//!    `FIRST_RELEASE_PLAN.md` R5)
+//! 6. Initialises the vault on disk via loomed-store
+//! 7. Writes the genesis commit to the vault
+//! 8. Prints the public key and participant ID to the terminal
 //!
 //! ## What it does NOT do
 //! - Connect to any network
 //! - Register the participant with any registry
-//! - Store the private key in plaintext anywhere
+//! - Store the private key, the signing key seed, or the recovery
+//!   mnemonic in plaintext anywhere
 
 use std::env;
 use std::io::Write;
@@ -70,7 +75,18 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let keypair = loomed_crypto::derive_keypair(passphrase_bytes, &salt_bytes)?;
     let public_key = keypair.public_key_hex();
 
-    // Step 5 — Initialise the vault directory structure on disk
+    // Step 5 — Generate and display the BIP-39 recovery mnemonic, then
+    // require explicit confirmation before anything is written to disk.
+    //
+    // The mnemonic's entropy is the signing key seed itself, so the
+    // phrase alone recovers this exact keypair independent of the
+    // passphrase — an independent recovery path Phase 1 never had.
+    // It does not replace the passphrase as the day-to-day credential.
+    // See spec §4 and FIRST_RELEASE_PLAN.md R5.
+    let mnemonic = loomed_crypto::mnemonic_from_seed(&keypair.signing_key_bytes())?;
+    display_and_confirm_mnemonic(&mnemonic)?;
+
+    // Step 6 — Initialise the vault directory structure on disk
     let current_dir = env::current_dir()?;
     println!("initialising vault at {}/.loomed/", current_dir.display());
 
@@ -81,7 +97,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         &argon2_salt,
     )?;
 
-    // Step 6 — Write the genesis commit.
+    // Step 7 — Write the genesis commit.
     //
     // The genesis commit records that this vault was created with this
     // keypair. It is the first commit in every vault — previous_hash is
@@ -90,7 +106,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let genesis_payload = serde_json::json!({
         "public_key": public_key,
-        "idp_type": "passphrase",
+        "idp_type": "software_passphrase",
         "protocol_version": "0.2"
     });
 
@@ -111,21 +127,67 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     vault.write_commit(&genesis_commit, passphrase_bytes)?;
 
-    // Step 7 — Print summary
+    // Step 8 — Print summary
     println!();
     println!("vault initialised successfully.");
     println!();
     println!("  participant ID : {}", patient_id);
     println!("  public key     : {}", public_key);
     println!("  genesis commit : {}", genesis_id);
-    println!("  idp type       : passphrase (Phase 1)");
+    println!("  idp type       : software_passphrase (Tier 0)");
     println!("  vault path     : {}/.loomed/", current_dir.display());
     println!();
     println!("your vault is encrypted with your passphrase.");
-    println!("do not lose your passphrase — there is no recovery in Phase 1.");
+    println!("if you forget your passphrase, your 24-word recovery phrase");
+    println!("is the only other way to recover this exact keypair.");
     println!();
 
     Ok(())
+}
+
+/// Displays a freshly generated recovery mnemonic once and requires
+/// explicit confirmation before the caller proceeds to write anything
+/// to disk.
+///
+/// When `LOOMED_PASSPHRASE` is set (non-interactive / test mode), the
+/// confirmation is skipped automatically — there is no terminal to type
+/// into, matching the convention used by [`prompt_passphrase`]. See
+/// coding standards §0.6 and FIRST_RELEASE_PLAN.md R5.
+///
+/// # Errors
+///
+/// Returns an error only if terminal I/O fails.
+fn display_and_confirm_mnemonic(mnemonic: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!();
+    println!("=======================================================");
+    println!("  RECOVERY PHRASE — write this down and store it safely");
+    println!("=======================================================");
+    println!();
+    println!("  {}", mnemonic);
+    println!();
+    println!("this is the ONLY way to recover your signing key if you");
+    println!("forget your passphrase. it will not be shown again and");
+    println!("is never stored anywhere by loomed.");
+    println!("=======================================================");
+    println!();
+
+    if std::env::var("LOOMED_PASSPHRASE").is_ok() {
+        return Ok(());
+    }
+
+    loop {
+        print!("type \"yes\" once you have safely recorded the phrase above: ");
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        if input.trim().eq_ignore_ascii_case("yes") {
+            return Ok(());
+        }
+
+        println!("please type \"yes\" to confirm, or Ctrl+C to abort.");
+    }
 }
 
 /// Prompts the user to enter their participant ID.

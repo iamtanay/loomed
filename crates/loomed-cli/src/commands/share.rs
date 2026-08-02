@@ -87,11 +87,16 @@ pub fn run(
 
     // Step 4 — Derive the deterministic signing keypair from passphrase + salt.
     //
+    // Uses current_signing_salt() rather than argon2_salt directly so that
+    // a prior `loomed key rotate` is honoured — argon2_salt never changes
+    // (it also derives the AES encryption key), but the signing salt does.
+    // See spec §12.1.
+    //
     // TODO: In Phase 4, this is replaced by loading a persisted encrypted
     // key file bound to the identity provider. The call site interface does
     // not change — only the source of the key changes. See spec §4 and
     // coding standards §0.1.
-    let salt = hex::decode(&vault.metadata.argon2_salt)?;
+    let salt = hex::decode(vault.current_signing_salt())?;
     let keypair = loomed_crypto::derive_keypair(passphrase_bytes, &salt)?;
 
     let patient_id = ParticipantId::new(&vault.metadata.patient_id)?;

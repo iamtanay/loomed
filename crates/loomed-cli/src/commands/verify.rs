@@ -12,15 +12,20 @@
 //! 2. Prompts for the vault passphrase
 //! 3. Reads all commits by traversing the chain from HEAD to genesis
 //! 4. Reverses the list to get genesis-to-HEAD order
-//! 5. Runs the chain verifier from loomed-core
+//! 5. Runs the chain verifier from loomed-core, using the genesis
+//!    commit's own embedded public key — not `vault.metadata.public_key`,
+//!    which reflects the *current* key after any `loomed key rotate` and
+//!    would be the wrong key to verify pre-rotation commits against
 //! 6. Prints the result for each commit and an overall verdict
 //!
 //! ## What this command does (<commit_id> mode)
 //! 1. Validates the commit_id prefix
 //! 2. Opens the vault in the current directory
 //! 3. Prompts for the vault passphrase
-//! 4. Reads and decrypts the specific commit
-//! 5. Runs verify_commit() against the vault's public key
+//! 4. Reads the full chain from genesis (same as --chain mode) so the
+//!    correct key for the target commit's position can be resolved even
+//!    if a key rotation occurred before or after it
+//! 5. Runs verify_commit() against the key active at that position
 //! 6. Prints hash validity, signature validity, and overall verdict
 //!
 //! ## What it does NOT do
@@ -29,7 +34,7 @@
 
 use std::env;
 
-use loomed_core::{verify_chain, verify_commit, CommitHash};
+use loomed_core::{resolve_signing_keys, verify_chain, verify_commit, Commit};
 use loomed_store::Vault;
 
 /// Runs the `loomed verify` command.
@@ -69,10 +74,62 @@ pub fn run(commit_id: Option<&str>, chain: bool) -> Result<(), Box<dyn std::erro
     }
 }
 
+/// Reads every commit in the vault by traversing from HEAD to genesis via
+/// `previous_hash`, then reverses the list to genesis-first order.
+///
+/// Shared by both verification modes: single-commit verification needs
+/// the full chain to resolve which key was active at the target commit's
+/// position (see [`resolve_signing_keys`]), and full-chain verification
+/// obviously needs every commit regardless.
+///
+/// # Errors
+///
+/// Returns a boxed error if any commit cannot be read or decrypted with
+/// `passphrase_bytes`.
+fn load_full_chain(
+    vault: &Vault,
+    passphrase_bytes: &[u8],
+) -> Result<Vec<Commit>, Box<dyn std::error::Error>> {
+    let mut commits = Vec::new();
+    let mut current = vault.read_head()?;
+
+    while let Some(commit_id) = current {
+        let commit = vault.read_commit(&commit_id, passphrase_bytes)?;
+        current = commit.previous_hash.clone();
+        commits.push(commit);
+    }
+
+    commits.reverse();
+    Ok(commits)
+}
+
+/// Returns the public key embedded in the genesis commit's own payload —
+/// the key that signed it, and the starting point for
+/// [`resolve_signing_keys`] across the rest of the chain.
+///
+/// This is read from the genesis commit itself rather than
+/// `vault.metadata.public_key`, which reflects the *current* signing key
+/// and would be the wrong key to verify pre-rotation commits against
+/// after a `loomed key rotate`. See spec §12.1.
+///
+/// # Errors
+///
+/// Returns a boxed error if `commits` is empty or the first commit's
+/// payload does not carry a `public_key` field.
+fn genesis_public_key(commits: &[Commit]) -> Result<&str, Box<dyn std::error::Error>> {
+    commits
+        .first()
+        .and_then(|genesis| genesis.payload.get("public_key"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "genesis commit is missing its embedded public_key".into())
+}
+
 /// Verifies a single commit by its commit_id.
 ///
-/// Reads the commit from disk, recomputes its hash, and verifies its
-/// ed25519 signature against the vault owner's public key from vault.toml.
+/// Reads the full chain from genesis, resolves which public key was
+/// active at the target commit's position (accounting for any
+/// `loomed key rotate` before or after it), and verifies the target
+/// commit's hash and signature against that key.
 ///
 /// Exits with code 1 if the commit fails verification.
 ///
@@ -82,10 +139,11 @@ pub fn run(commit_id: Option<&str>, chain: bool) -> Result<(), Box<dyn std::erro
 ///
 /// # Errors
 ///
-/// Returns a boxed error if the vault is not found, the commit file cannot
-/// be read, or the passphrase is incorrect.
+/// Returns a boxed error if the vault is not found, the target commit_id
+/// is not present in the chain, any commit file cannot be read, or the
+/// passphrase is incorrect.
 ///
-/// See spec §7.
+/// See spec §7 and §12.1.
 fn verify_single(commit_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Step 1 — Validate prefix before opening vault or prompting passphrase.
     // Per coding standards §0.6: fail fast before credentials.
@@ -109,22 +167,23 @@ fn verify_single(commit_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
-    // Step 4 — Read and decrypt the commit
-    let hash = CommitHash(commit_id.to_string());
-    let commit = vault.read_commit(&hash, passphrase_bytes)?;
+    // Step 4 — Read the full chain from genesis and locate the target
+    // commit's position within it, so the correct key for that position
+    // can be resolved even across a key rotation. See spec §12.1.
+    let commits = load_full_chain(&vault, passphrase_bytes)?;
+    let genesis_key = genesis_public_key(&commits)?;
+    let signing_keys = resolve_signing_keys(&commits, genesis_key);
 
-    // Step 5 — Verify hash and signature against the vault owner's public key.
-    //
-    // In Phase 1, all commits are self-authored and signed with the keypair
-    // derived from passphrase + salt. The public key in vault.toml is the
-    // verifying key for all Phase 1 commits. See spec §7.
-    //
-    // TODO: In Phase 4, the public key will be loaded from the vault's
-    // persisted key file rather than vault.toml. The call site interface
-    // does not change — only the source of the key changes. See spec §4
-    // and coding standards §0.1.
-    let public_key = &vault.metadata.public_key;
-    let result = verify_commit(&commit, public_key)?;
+    let index = commits
+        .iter()
+        .position(|c| c.commit_id.as_str() == commit_id)
+        .ok_or_else(|| format!("commit not found in this vault's chain: {}", commit_id))?;
+
+    let commit = &commits[index];
+
+    // Step 5 — Verify hash and signature against the key active at this
+    // commit's position in the chain. See spec §7 and §12.1.
+    let result = verify_commit(commit, &signing_keys[index])?;
 
     // Step 6 — Print result
     println!();
@@ -189,28 +248,16 @@ fn verify_full_chain() -> Result<(), Box<dyn std::error::Error>> {
     let passphrase = super::read_passphrase("vault passphrase: ")?;
     let passphrase_bytes = passphrase.as_bytes();
 
-    // Step 4 — Traverse the chain from HEAD to genesis
-    let mut commits = Vec::new();
-    let mut current: Option<CommitHash> = head;
+    // Step 4 — Read the full chain from genesis to HEAD
+    let commits = load_full_chain(&vault, passphrase_bytes)?;
 
-    while let Some(commit_id) = current {
-        let commit = vault.read_commit(&commit_id, passphrase_bytes)?;
-        let previous = commit.previous_hash.clone();
-        commits.push(commit);
-        current = previous;
-    }
-
-    // Step 5 — Reverse to genesis-to-HEAD order for the verifier
-    commits.reverse();
-
-    // Step 6 — Run chain verification.
-    //
-    // TODO: In Phase 4, the public key will be loaded from the vault's
-    // persisted key file rather than vault.toml. The call site interface
-    // does not change — only the source of the key changes. See spec §4
-    // and coding standards §0.1.
-    let public_key = &vault.metadata.public_key;
-    let result = verify_chain(&commits, public_key)?;
+    // Step 5 — Run chain verification, starting from the key embedded in
+    // the genesis commit's own payload rather than vault.metadata.public_key
+    // (which reflects the *current* key after any `loomed key rotate`).
+    // verify_chain resolves the correct key per commit internally when the
+    // chain contains one or more key rotations. See spec §7 and §12.1.
+    let genesis_key = genesis_public_key(&commits)?;
+    let result = verify_chain(&commits, genesis_key)?;
 
     // Step 7 — Print results
     println!();

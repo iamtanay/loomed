@@ -132,6 +132,16 @@ pub enum RecordType {
     /// out of band. See spec §10.
     ConsentToken,
 
+    /// An early invalidation of a previously issued consent token.
+    ///
+    /// Written by `loomed revoke` before a token's natural expiry. Nothing
+    /// is deleted or edited — the original `consent_token` issuance commit
+    /// remains in the chain; this commit declares it no longer valid.
+    /// Only blocks *future* presentation of the token; it cannot undo a
+    /// write that already happened under it. See spec §12 (revocation
+    /// pattern) and §10.2 (token lifecycle).
+    TokenRevocation,
+
     /// A protocol-level vault re-encryption event.
     ///
     /// Written automatically after a key rotation to record that historical
@@ -365,6 +375,14 @@ mod tests {
         let rt = RecordType::ConsentToken;
         let serialised = serde_json::to_string(&rt).unwrap();
         assert_eq!(serialised, "\"consent_token\"");
+    }
+
+    /// Spec §10.2: RecordType::TokenRevocation serialises to "token_revocation".
+    #[test]
+    fn token_revocation_record_type_serialises_to_snake_case() {
+        let rt = RecordType::TokenRevocation;
+        let serialised = serde_json::to_string(&rt).unwrap();
+        assert_eq!(serialised, "\"token_revocation\"");
     }
 
     /// Spec §10: SelfAuthored authorization serialises correctly.

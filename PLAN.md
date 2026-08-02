@@ -2,7 +2,7 @@
 
 This file tracks what has been built, what is next, and what is coming in later phases. It is the ground truth for where we are in the protocol implementation.
 
-**Current status: Phase 3 Session 2 complete (consent token enforcement). 201 tests passing.**
+**Current status: Phase 4-lite Session 2 complete (key rotation). R5+R6 of the First Release Plan done. 240 tests passing.**
 
 ---
 
@@ -294,38 +294,153 @@ Deferred to Phase 3 Session 3:
 
 ---
 
-## Phase 4 — Identity Provider + Key Rotation 🔵 Planned
+## Phase 3 Session 3 ✅ Complete — Audit Trail + Revocation
+
+Final session of Phase 3. R4 of the [First Release Plan](FIRST_RELEASE_PLAN.md). Spec §11, §10.2, §12.
+
+### What Was Built
+
+**`loomed-core`**:
+- `RecordType::TokenRevocation` variant (serialises to `token_revocation`) — a new commit type declaring a previously issued token invalid, written by `loomed revoke`. Nothing is edited or deleted: the original `consent_token` issuance commit stays in the chain exactly as before.
+- 2 new error variants: `TokenRevoked`, `TokenAlreadyRevoked`
+
+**`loomed-cli` — shared chain-scanning module, `token_chain.rs`**:
+- `scan_all_tokens()` / `find_token()` — one place that answers "what tokens exist, have they been used, have they been revoked" by scanning the full chain once. `loomed commit --token`, `loomed revoke`, and `loomed audit` all call into this instead of each re-implementing chain traversal — there is exactly one definition of what "used" and "revoked" mean
+- `commit.rs`'s `find_and_authorize_token` was refactored to use this shared scan (previously it had its own bespoke traversal) and now also rejects a revoked token, with a new error path proven by `commit_with_revoked_token_fails`
+
+**`loomed-cli` — `loomed revoke <token_id>`**:
+- Validates token_id format before opening the vault; confirms the token exists and is not already revoked; writes a `token_revocation` commit self-authored by the patient
+- Revoking an already-used token is allowed (harmless, since the token is already consumed) — only double-revocation is rejected
+- 5 new integration tests, including the cross-command proof that a revoked token is rejected by `loomed commit --token`
+
+**`loomed-cli` — `loomed audit` / `loomed audit --entity <participant_id>`**:
+- One entry per issued token, newest-issued first, showing status: `active`, `used` (with the consuming commit_id and timestamp), `expired`, or `revoked` (with timestamp)
+- `--entity` filters to tokens issued to one participant
+- 6 new integration tests
+
+**Scope note, stated in `audit.rs`'s module doc**: this is a derived view over data already in the chain, not literally spec §11's `access_event` commit schema. The spec's schema carries `event_id`, `accessed_by_name`, and a `records_accessed` list — `accessed_by_name` needs the participant registry (Phase 5, not built), and `records_accessed` only matters once a single token can authorize more than the one write that consumes it, which single-use v1 tokens never do. Read-token presentation isn't tracked at all: there is no CLI-level read-access flow yet for an institution to actually present one against — that needs Phase 4/5 identity and Phase 6's API layer, not something to fake in the reference CLI.
+
+### Phase 3 Complete
+
+All three sessions of Phase 3 (issuance, enforcement, audit + revocation) are done. The full consent model — `loomed share`, `loomed commit --token`, `loomed revoke`, `loomed audit` — works end-to-end against real single-use write tokens, verified by a live smoke test: issue two tokens, exercise one via a real commit, revoke the other unused, confirm both show correctly in the audit trail.
+
+### Test Count
+
+| Crate | Before | After |
+|---|---|---|
+| `loomed-core` | 83 | 84 (+1 TokenRevocation RecordType test) |
+| `loomed-cli` | 68 | 79 (+11: 5 revoke, 6 audit) |
+| `loomed-crypto` | 17 | 17 |
+| `loomed-store` | 18 | 18 |
+| `loomed-sync` | 15 | 15 |
+| **Total** | **201** | **213, 0 failures** |
+
+---
+
+## Phase 4-lite Session 1 ✅ Complete — Identity Provider Trait + Tier 0
+
+R5 of the [First Release Plan](FIRST_RELEASE_PLAN.md). Spec §4.
+
+### What Was Built
+
+**`loomed-crypto` — new `identity.rs` module**:
+- `IdentityProvider` trait — `sign()`, `public_key_hex()`, `tier()`. The tier-agnostic seam spec §4 calls for: every future identity tier (Tier 1 national ID, Tier 2 hardware enclave, Tier 3 Shamir quorum) implements the same trait, so call sites never change
+- `PassphraseIdentityProvider` — the sole v1.0 implementation (Tier 0), wrapping the existing deterministic `derive_keypair`. Reports `tier() == "software_passphrase"`
+- `mnemonic_from_seed()` / `seed_from_mnemonic()` — BIP-39 24-word recovery phrase generation and recovery. The mnemonic's 256-bit entropy *is* the ed25519 signing key seed directly (no intermediate hash), so recovery is a lossless round trip independent of the vault passphrase
+- `LooMedKeypair::signing_key_bytes()` / `keypair_from_seed()` — expose and reconstruct the raw seed, scoped narrowly to mnemonic recovery per coding standards §0.4 (never logged or persisted outside the one-time display)
+- Added `bip39` as a workspace dependency
+- 9 new tests: determinism, tier reporting, sign/verify roundtrip via the trait, mnemonic round-trip, 24-word length, malformed/wrong-length phrase rejection, different seeds produce different phrases
+
+**`loomed-cli` — `loomed init` displays a recovery mnemonic**:
+- After deriving the keypair, `init.rs` generates the mnemonic from the signing key seed, prints it once inside a clearly marked banner, and requires the user to type `"yes"` before anything is written to disk — the confirmation gate is skipped automatically when `LOOMED_PASSPHRASE` is set (non-interactive/test mode), matching the existing passphrase-confirmation convention
+- The mnemonic does not replace the passphrase as the day-to-day credential — it is an independent recovery path Phase 1 never had at all
+- `vault.toml`'s `idp_type` and the genesis commit's payload were renamed from `"passphrase"` to `"software_passphrase"` throughout, matching the Tier 0 terminology introduced here (pre-1.0, so this is a clean rename, not a migration)
+
+**`loomed-cli` — new `loomed key status` command**:
+- Shows the vault's current identity tier and public key. No passphrase required — reads only plaintext `vault.toml`, same design principle as `loomed status`
+- 3 new integration tests, plus 2 for the recovery phrase display (banner text, 24-word count, differs across vaults)
+
+### Test Count
+
+| Crate | Before | After |
+|---|---|---|
+| `loomed-cli` | 79 | 84 (+5: 2 recovery phrase, 3 key status) |
+| `loomed-core` | 84 | 84 |
+| `loomed-crypto` | 17 | 26 (+9 identity tests) |
+| `loomed-store` | 18 | 18 |
+| `loomed-sync` | 15 | 15 |
+| **Total** | **213** | **227, 0 failures** |
+
+---
+
+## Phase 4-lite Session 2 ✅ Complete — Key Rotation
+
+R6 of the [First Release Plan](FIRST_RELEASE_PLAN.md). Spec §12.1.
+
+### The Design Problem This Session Had to Solve
+
+A naive rotation — just deriving a new keypair from a new passphrase — breaks history: `Vault::read_commit` derives its AES-256 key from `argon2_salt` on every call, uniformly for the whole vault. If `argon2_salt` (or the passphrase feeding it) ever changed, every historical `.lmc` file encrypted under the old key would become permanently undecryptable — not a documented limitation, an actual regression. The plan's own text ("historical `.lmc` files stay encrypted under the original key") requires the encryption key to *never* change in v1.
+
+**The fix**: decouple the signing key from the encryption key. `VaultMetadata` gained a new `signing_salt: Option<String>` field — `None` before any rotation (signing key derives from `argon2_salt`, identical to Phase 1), `Some(salt)` after a rotation (a freshly generated salt, independent of `argon2_salt`). `argon2_salt` itself is never touched, so the AES key — and every historical commit's readability — is untouched by rotation. This is additive and backward-compatible: existing vaults and every prior test needed zero changes.
+
+The second problem this created: `verify_chain`/`verify_commit` previously took one public key applied uniformly to every commit. After a rotation, different chain segments are signed by different keys. Fixed by adding `resolve_signing_keys(commits, genesis_public_key)` to `loomed-core::verify` — it walks the chain forward, switching the active key whenever it crosses a `KeyRotation` commit whose payload carries `new_public_key` (the genesis commit's own `KeyRotation` payload only carries `public_key`, so it never triggers a switch). `verify_chain` uses this internally per-commit instead of one key for the whole chain; existing tests needed no changes since a chain with no rotation never switches keys.
+
+### What Was Built
+
+**`loomed-store`**:
+- `VaultMetadata.signing_salt: Option<String>` (see above)
+- `Vault::current_signing_salt()` — returns `signing_salt` if set, else falls back to `argon2_salt`
+- `Vault::rotate_signing_key(new_public_key, new_signing_salt)` — updates only those two fields; `argon2_salt` is never touched
+- 3 new tests: defaults to `argon2_salt` pre-rotation, rotation updates key+salt without touching `argon2_salt`, changes persist across `Vault::open`
+
+**`loomed-core`**:
+- `resolve_signing_keys()` in `verify.rs` (see above), exported from the crate root
+- `verify_chain()` refactored to resolve one key per commit internally rather than taking a single uniform key
+- 3 new tests: key switches after (not at) the rotation commit, a full chain spanning a rotation verifies end-to-end, a commit signed with the retired old key after rotation correctly fails
+
+**`loomed-cli` — new `loomed key rotate` command** (`commands/key.rs`):
+- Derives the current keypair via `current_signing_salt()` and confirms it matches `vault.metadata.public_key` before anything is written
+- Generates a fresh random signing salt (before deriving the new keypair, per coding standards §0.5) and derives the new keypair from the *same* passphrase — the passphrase itself is never changed, since changing it would break AES decryption of history (see above)
+- Writes a self-signed `key_rotation` commit: the OLD key signs, attesting to the NEW public key (payload: `old_public_key`, `new_public_key`, `idp_type`) — spec §12.1 step 3
+- Updates `vault.toml` via `rotate_signing_key()`
+- Scans the chain (reusing `token_chain::scan_all_tokens`, the same shared module Phase 3 built) for every still-active consent token and writes an explicit `token_revocation` commit for each, signed by the NEW key. This is deliberate and auditable, not just an incidental side effect of the old key no longer matching `vault.metadata.public_key` for signature checks
+- `commit.rs`, `share.rs`, `revoke.rs` updated to derive their signing keypair via `current_signing_salt()` instead of `argon2_salt` directly, so a prior rotation is honoured by every command that signs
+
+**`loomed-cli` — `loomed verify` made rotation-aware**:
+- `verify --chain` now reads the genesis commit's own embedded public key (from its payload) as the chain's starting key, instead of `vault.metadata.public_key` — which reflects the *current* key after rotation and would be the wrong key to verify pre-rotation commits against
+- `verify <commit_id>` (single-commit mode) now reads the full chain from genesis and uses `resolve_signing_keys` to find the key active at the target commit's position, since a single commit can no longer be verified in isolation once rotation exists
+- Both paths share a new `load_full_chain()` helper (previously duplicated inline in `verify_full_chain`)
+
+**Explicit v1 scope note** (`commands/key.rs` module doc, also printed by `loomed key rotate` itself): historical records remain encrypted under the original passphrase-derived key; vault re-encryption on rotation (spec §12.1 step 5) is not implemented — deferred past v1.0, per `FIRST_RELEASE_PLAN.md`. Rotation is patient-initiated and self-authorized only — no custodian quorum, no re-authentication tier, consistent with Tier 0.
+
+### Test Count
+
+| Crate | Before | After |
+|---|---|---|
+| `loomed-cli` | 84 | 91 (+7: 5 key rotate, 1 verify-across-rotation, 1 token revoked by rotation) |
+| `loomed-core` | 84 | 87 (+3 rotation-aware verify tests) |
+| `loomed-crypto` | 26 | 26 |
+| `loomed-store` | 18 | 21 (+3 signing_salt/rotate tests) |
+| `loomed-sync` | 15 | 15 |
+| **Total** | **227** | **240, 0 failures** |
+
+Phase 4-lite (R5+R6) is now complete: identity is a real trait with one honest Tier 0 implementation, recovery has an independent path, and rotation works end-to-end including token invalidation and cross-rotation chain verification — all without touching the AES encryption key, so nothing in history breaks.
+
+---
+
+## Phase 4 — Full Identity Provider (Tier 1–3) 🔵 Planned (post-v1.0)
 
 **Spec:** §4, §12.
 
-This phase replaces the passphrase-derived key model with a proper IdP abstraction. The call sites do not change — only the source of the key changes.
+Deferred past v1.0 per `FIRST_RELEASE_PLAN.md`'s fast-follow roadmap. The `IdentityProvider` trait and Tier 0 implementation already exist (Phase 4-lite, above) — these slot in as new trait implementations with no call-site changes.
 
-### What to Build
+### What's Left
 
-**IdP abstraction** (new `loomed-idp` crate or trait in `loomed-crypto`):
-- Define the `IdentityProvider` trait: `sign(&self, message: &[u8]) -> Result<String>`
 - Tier 1: National digital identity binding (Aadhaar OTP, eIDAS, etc.)
 - Tier 2: Hardware secure enclave (Apple Secure Enclave, Android StrongBox, YubiKey)
-- Tier 3: Shamir Secret Sharing recovery (3-of-5 custodians)
-
-**Persisted encrypted key file**:
-- Replace `derive_keypair(passphrase, salt)` with loading a key file encrypted with AES-256-GCM
-- Key file lives at `.loomed/key.enc` (never in plaintext)
-- `loomed key rotate` — initiate key rotation, write `key_rotation` commit signed by old + new key
-- `loomed key status` — show current key binding and IdP type
-
-**Key rotation flow** (spec §12.1):
-1. Patient authenticates via IdP recovery path
-2. New keypair generated
-3. `key_rotation` commit written, signed by old key (if available) or recovery quorum
-4. All active consent tokens issued under old key are invalidated
-5. Historical records re-encrypted under new key → `vault_reencryption` commit
-
-**Affected call sites** (all have `// TODO: Phase 4` already):
-- `crates/loomed-cli/src/commands/init.rs`
-- `crates/loomed-cli/src/commands/commit.rs`
-- `crates/loomed-cli/src/commands/show.rs`
-- `crates/loomed-cli/src/commands/verify.rs`
+- Tier 3: Shamir Secret Sharing custodian quorum recovery (3-of-5)
+- Persisted encrypted key file (`.loomed/key.enc`) replacing passphrase-only derivation for Tier 1+
+- Vault re-encryption on rotation (spec §12.1 step 5) — re-encrypt historical `.lmc` files under the new key so a rotation eventually retires the old AES key too, not just the signing key
 
 ---
 

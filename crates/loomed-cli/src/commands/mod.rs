@@ -17,15 +17,19 @@
 //! See coding standards §0.6.
 
 pub mod add;
+pub mod audit;
 pub mod commit;
 pub mod init;
+pub mod key;
 pub mod log;
 pub mod prompts;
 pub mod remote;
+pub mod revoke;
 pub mod share;
 pub mod show;
 pub mod status;
 pub mod sync_cmd;
+pub mod token_chain;
 pub mod verify;
 
 /// Reads the vault passphrase for the current operation.

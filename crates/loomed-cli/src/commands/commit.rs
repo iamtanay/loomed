@@ -11,9 +11,9 @@
 //! 5. Reads the current HEAD to determine previous_hash
 //! 6. Derives the deterministic signing keypair from passphrase + salt
 //! 7. If `--token` was given: traverses the chain to find the token and
-//!    confirm it has not already been presented, then runs the full
-//!    spec §10.1–§10.2 authorization check (signature, expiry, access
-//!    type, scope) against the staged record's type
+//!    confirm it has not already been presented or revoked, then runs
+//!    the full spec §10.1–§10.2 authorization check (signature, expiry,
+//!    access type, scope) against the staged record's type
 //! 8. Builds the commit via loomed-core builder — `SelfAuthored` by
 //!    default, or `ConsentToken { token_id }` when `--token` was given
 //! 9. Signs the canonical bytes
@@ -41,9 +41,11 @@
 
 use std::env;
 
-use loomed_core::{builder, AuthorizationRef, Commit, ConsentToken, RecordType};
+use loomed_core::{builder, AuthorizationRef, ConsentToken, RecordType};
 use loomed_crypto::sign;
 use loomed_store::{clear_staged, read_staged, Vault};
+
+use super::token_chain;
 
 /// Runs the `loomed commit` command.
 ///
@@ -102,11 +104,16 @@ pub fn run(token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     // The same passphrase and salt always produce the same keypair, ensuring
     // that commits signed here verify against the public key in vault.toml.
     //
+    // Uses current_signing_salt() rather than argon2_salt directly so that
+    // a prior `loomed key rotate` is honoured — argon2_salt never changes
+    // (it also derives the AES encryption key), but the signing salt does.
+    // See spec §12.1.
+    //
     // TODO: In Phase 4, this is replaced by loading a persisted encrypted
     // key file bound to the identity provider. The call site interface does
     // not change — only the source of the key changes. See spec §4 and
     // coding standards §0.1.
-    let salt = hex::decode(&vault.metadata.argon2_salt)?;
+    let salt = hex::decode(vault.current_signing_salt())?;
     let keypair = loomed_crypto::derive_keypair(passphrase_bytes, &salt)?;
 
     let patient_id = loomed_core::ParticipantId::new(&vault.metadata.patient_id)?;
@@ -170,13 +177,8 @@ pub fn run(token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Finds a consent token by ID in the vault's commit chain, confirms it
-/// has not already been used, and runs the full spec §10.1–§10.2
-/// authorization check against `record_type`.
-///
-/// Traverses the full chain from HEAD to genesis in a single pass,
-/// checking every commit for either an `AuthorizationRef::ConsentToken`
-/// already carrying this token_id (meaning it was already used) or a
-/// `consent_token` record whose payload is this token's issuance.
+/// has not already been used or revoked, and runs the full spec
+/// §10.1–§10.2 authorization check against `record_type`.
 ///
 /// # Errors
 ///
@@ -184,6 +186,8 @@ pub fn run(token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
 ///   commit in the chain issued this token_id.
 /// * [`loomed_core::LooMedError::TokenAlreadyUsed`] — An earlier commit
 ///   already carries this token_id as its authorization.
+/// * [`loomed_core::LooMedError::TokenRevoked`] — A `token_revocation`
+///   commit invalidated this token before this presentation.
 /// * [`loomed_core::LooMedError::TokenSignatureInvalid`],
 ///   [`loomed_core::LooMedError::TokenExpired`],
 ///   [`loomed_core::LooMedError::TokenNotAuthorizedForWrite`] — See
@@ -195,42 +199,29 @@ fn find_and_authorize_token(
     record_type: &RecordType,
     public_key: &str,
 ) -> Result<ConsentToken, Box<dyn std::error::Error>> {
-    let mut found_token: Option<ConsentToken> = None;
-    let mut already_used = false;
+    let state = token_chain::find_token(vault, passphrase_bytes, token_id_str)?.ok_or_else(
+        || loomed_core::LooMedError::TokenNotFound {
+            token_id: token_id_str.to_string(),
+        },
+    )?;
 
-    let mut current = vault.read_head()?;
-    while let Some(commit_id) = current {
-        let commit: Commit = vault.read_commit(&commit_id, passphrase_bytes)?;
-
-        if let AuthorizationRef::ConsentToken { token_id } = &commit.authorization_ref {
-            if token_id.as_str() == token_id_str {
-                already_used = true;
-            }
-        }
-
-        if found_token.is_none() && commit.record_type == RecordType::ConsentToken {
-            if let Ok(candidate) = serde_json::from_value::<ConsentToken>(commit.payload.clone()) {
-                if candidate.token_id.as_str() == token_id_str {
-                    found_token = Some(candidate);
-                }
-            }
-        }
-
-        current = commit.previous_hash.clone();
-    }
-
-    let token = found_token.ok_or_else(|| loomed_core::LooMedError::TokenNotFound {
-        token_id: token_id_str.to_string(),
-    })?;
-
-    if already_used {
+    if state.used_by.is_some() {
         return Err(loomed_core::LooMedError::TokenAlreadyUsed {
             token_id: token_id_str.to_string(),
         }
         .into());
     }
 
-    token.authorize_write(public_key, record_type, chrono::Utc::now())?;
+    if state.revoked_at.is_some() {
+        return Err(loomed_core::LooMedError::TokenRevoked {
+            token_id: token_id_str.to_string(),
+        }
+        .into());
+    }
 
-    Ok(token)
+    state
+        .token
+        .authorize_write(public_key, record_type, chrono::Utc::now())?;
+
+    Ok(state.token)
 }

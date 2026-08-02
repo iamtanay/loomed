@@ -37,9 +37,12 @@
 //!
 //! ## Test Coverage
 //!
-//! init (3), status (4), add (5), add -i (7), commit (5), log (3),
-//! show (6), verify (8), remote/sync (11), share (8),
-//! commit --token (9), full lifecycle (1) — 68 tests total.
+//! init (5), status (4), add (5), add -i (7), commit (5), log (3),
+//! show (6), verify (9), remote/sync (11), share (8),
+//! commit --token (10), revoke (5), audit (6), key status (3),
+//! key rotate (5), full lifecycle (1)
+//! — 91 tests total (approximate per-category counts; see individual
+//! test names for the exact rule each one proves).
 //!
 //! See spec §20 and coding standards §6.
 
@@ -188,7 +191,52 @@ fn init_output_contains_participant_id_and_public_key() {
         .stdout(predicate::str::contains(TEST_PATIENT_ID))
         .stdout(predicate::str::contains("ed25519:"))
         .stdout(predicate::str::contains("genesis commit"))
-        .stdout(predicate::str::contains("idp type       : passphrase"));
+        .stdout(predicate::str::contains("idp type       : software_passphrase"));
+}
+
+/// FIRST_RELEASE_PLAN.md R5: `loomed init` must display a 24-word BIP-39
+/// recovery phrase once, independent of the passphrase.
+#[test]
+fn init_output_contains_recovery_phrase() {
+    let dir = TempDir::new().unwrap();
+
+    let output = run_init(&dir).success().get_output().stdout.clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    assert!(
+        stdout.contains("RECOVERY PHRASE"),
+        "init output must display the recovery phrase banner"
+    );
+
+    // Find the line printed between the banner and confirm it has 24 words.
+    let phrase_line = stdout
+        .lines()
+        .find(|line| line.split_whitespace().count() == 24)
+        .expect("a 24-word recovery phrase line must appear in init output");
+    assert_eq!(phrase_line.split_whitespace().count(), 24);
+}
+
+/// FIRST_RELEASE_PLAN.md R5: Running `loomed init` twice with the same
+/// stdin/passphrase must produce two different recovery phrases — the
+/// mnemonic must not be a fixed or predictable value.
+#[test]
+fn init_recovery_phrase_differs_across_vaults() {
+    let dir1 = TempDir::new().unwrap();
+    let dir2 = TempDir::new().unwrap();
+
+    let out1 = String::from_utf8(run_init(&dir1).success().get_output().stdout.clone()).unwrap();
+    let out2 = String::from_utf8(run_init(&dir2).success().get_output().stdout.clone()).unwrap();
+
+    let phrase1 = out1
+        .lines()
+        .find(|line| line.split_whitespace().count() == 24)
+        .unwrap();
+    let phrase2 = out2
+        .lines()
+        .find(|line| line.split_whitespace().count() == 24)
+        .unwrap();
+
+    assert_ne!(phrase1, phrase2);
 }
 
 /// Spec §5: Running `loomed init` a second time in the same directory
@@ -2199,4 +2247,519 @@ fn commit_with_commit_scoped_token_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("does not authorise this write"));
+}
+
+// ---------------------------------------------------------------------------
+// loomed revoke
+// ---------------------------------------------------------------------------
+
+/// Spec §10.2/§12: `loomed revoke` on an active token must succeed and
+/// write a token_revocation commit.
+#[test]
+fn revoke_invalidates_active_token() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["revoke", &token_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("consent token revoked"))
+        .stdout(predicate::str::contains(&token_id));
+}
+
+/// Coding standards §0.6: `loomed revoke` with a malformed token_id must
+/// fail before prompting for the passphrase.
+#[test]
+fn revoke_rejects_malformed_token_id_before_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["revoke", "not-a-token"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("lmt_"));
+}
+
+/// Spec §10: `loomed revoke` on a token_id that does not exist in the
+/// chain must fail with a clear error.
+#[test]
+fn revoke_fails_for_nonexistent_token() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["revoke", "lmt_doesnotexist00000000"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("consent token not found"));
+}
+
+/// Spec §10.2: Revoking an already-revoked token a second time must fail
+/// — revocation is not idempotent, it is a one-time state transition.
+#[test]
+fn revoke_fails_when_already_revoked() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["revoke", &token_id])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["revoke", &token_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already revoked"));
+}
+
+/// Spec §10.2/§12: A revoked token must not authorize a commit, even if
+/// it has not yet reached its natural expiry.
+#[test]
+fn commit_with_revoked_token_fails() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["revoke", &token_id])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("was revoked"));
+}
+
+// ---------------------------------------------------------------------------
+// loomed audit
+// ---------------------------------------------------------------------------
+
+/// Spec §11: `loomed audit` on a vault with no issued tokens must say so
+/// clearly rather than printing an empty list.
+#[test]
+fn audit_with_no_tokens_shows_empty_message() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("audit")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no consent tokens issued yet"));
+}
+
+/// Spec §11: An unused, unexpired, unrevoked token must show as "active"
+/// in the audit trail.
+#[test]
+fn audit_shows_issued_token_as_active() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "read");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("audit")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&token_id))
+        .stdout(predicate::str::contains("active"))
+        .stdout(predicate::str::contains(TEST_INSTITUTION_ID));
+}
+
+/// Spec §11: A token that authorized a write must show as "used" in the
+/// audit trail, with the commit_id that consumed it.
+#[test]
+fn audit_shows_used_status_after_commit() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["add", "--type", "lab_result", "-m", "fasting glucose"])
+        .assert()
+        .success();
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["commit", "--token", &token_id])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("audit")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("used"))
+        .stdout(predicate::str::contains("used_at"));
+}
+
+/// Spec §11/§12: A revoked token must show as "revoked" in the audit trail.
+#[test]
+fn audit_shows_revoked_status_after_revoke() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["revoke", &token_id])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("audit")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("revoked"));
+}
+
+/// Spec §11: `loomed audit --entity <id>` must only show tokens issued to
+/// that participant, excluding tokens issued to others.
+#[test]
+fn audit_entity_filter_only_shows_matching_tokens() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    // Issued to TEST_INSTITUTION_ID
+    issue_token(&dir, "full_record", "read");
+
+    // Issued to a different, distinct participant.
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args([
+            "share",
+            "LMG-AIIMS-4KZQR9WMNV-43",
+            "--scope",
+            "full_record",
+            "--duration",
+            "4",
+            "--purpose",
+            "vaccination_record",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .args(["audit", "--entity", TEST_INSTITUTION_ID])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(TEST_INSTITUTION_ID))
+        .stdout(predicate::str::contains("1 token(s) total."));
+}
+
+/// Spec §5: `loomed audit` against a directory with no vault must fail
+/// with a clear error.
+#[test]
+fn audit_fails_with_no_vault() {
+    let dir = TempDir::new().unwrap();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("audit")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+// ---------------------------------------------------------------------------
+// `loomed key status` tests — FIRST_RELEASE_PLAN.md R5
+// ---------------------------------------------------------------------------
+
+/// FIRST_RELEASE_PLAN.md R5: `loomed key status` on a fresh vault must
+/// report the Tier 0 software_passphrase identity and the vault's public key.
+#[test]
+fn key_status_shows_software_passphrase_tier_and_public_key() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("key")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tier       : software_passphrase"))
+        .stdout(predicate::str::contains("ed25519:"));
+}
+
+/// FIRST_RELEASE_PLAN.md R5: `loomed key status` requires no passphrase —
+/// all data it displays is stored in plaintext in vault.toml.
+#[test]
+fn key_status_requires_no_passphrase() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("key")
+        .arg("status")
+        .assert()
+        .success();
+}
+
+/// Spec §5: `loomed key status` with no vault initialised must fail clearly.
+#[test]
+fn key_status_fails_with_no_vault() {
+    let dir = TempDir::new().unwrap();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("key")
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+// ---------------------------------------------------------------------------
+// `loomed key rotate` tests — FIRST_RELEASE_PLAN.md R6
+// ---------------------------------------------------------------------------
+
+/// Returns the public key line printed by `loomed key status`.
+fn current_public_key(dir: &TempDir) -> String {
+    let output = Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("key")
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "loomed key status must succeed");
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|line| line.contains("public key"))
+        .and_then(|line| line.split_once(':').map(|(_, value)| value))
+        .map(|s| s.trim().to_string())
+        .expect("key status output must contain a public key line")
+}
+
+/// Runs `loomed key rotate` with the standard test passphrase.
+fn run_key_rotate(dir: &TempDir) -> assert_cmd::assert::Assert {
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("key")
+        .arg("rotate")
+        .assert()
+}
+
+/// FIRST_RELEASE_PLAN.md R6: `loomed key rotate` must produce a genuinely
+/// different public key from the one the vault was initialised with.
+#[test]
+fn key_rotate_changes_the_public_key() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    let original_key = current_public_key(&dir);
+
+    run_key_rotate(&dir)
+        .success()
+        .stdout(predicate::str::contains("key rotated successfully."));
+
+    let rotated_key = current_public_key(&dir);
+    assert_ne!(original_key, rotated_key);
+}
+
+/// FIRST_RELEASE_PLAN.md R6: `loomed key rotate` writes a self-signed
+/// key_rotation commit that appears in `loomed log`.
+#[test]
+fn key_rotate_writes_visible_key_rotation_commit() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    run_key_rotate(&dir).success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("log")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("key rotation"));
+}
+
+/// Spec §5: `loomed key rotate` with no vault initialised must fail clearly.
+#[test]
+fn key_rotate_fails_with_no_vault() {
+    let dir = TempDir::new().unwrap();
+
+    run_key_rotate(&dir)
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+/// FIRST_RELEASE_PLAN.md R6: After rotation, historical commits (genesis
+/// included) must remain readable — argon2_salt and the AES encryption
+/// key must never change on rotation.
+#[test]
+fn key_rotate_preserves_access_to_historical_commits() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+    let genesis_id = read_head(&dir);
+
+    run_key_rotate(&dir).success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("show")
+        .arg(&genesis_id)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vault initialised"));
+}
+
+/// FIRST_RELEASE_PLAN.md R6 / spec §12.1: A commit written after rotation
+/// must be signed with the new key, and `loomed verify --chain` must pass
+/// end-to-end across the rotation boundary.
+#[test]
+fn verify_chain_passes_after_rotation_and_a_new_commit() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    run_key_rotate(&dir).success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "post-rotation lab result"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("commit")
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("verify")
+        .arg("--chain")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("chain ok"));
+}
+
+/// FIRST_RELEASE_PLAN.md R6: `loomed key rotate` must explicitly revoke
+/// every still-active consent token — the audit trail must show it as
+/// revoked, not merely silently unusable.
+#[test]
+fn key_rotate_revokes_active_consent_tokens() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    let token_id = issue_token(&dir, "full_record", "write");
+
+    run_key_rotate(&dir)
+        .success()
+        .stdout(predicate::str::contains("tokens revoked : 1"));
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("audit")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(token_id))
+        .stdout(predicate::str::contains("status      revoked"));
+}
+
+/// FIRST_RELEASE_PLAN.md R6: A token revoked by rotation must be rejected
+/// by `loomed commit --token`, the same as any other revoked token.
+#[test]
+fn commit_with_token_revoked_by_rotation_fails() {
+    let dir = TempDir::new().unwrap();
+    require_vault(&dir);
+
+    let token_id = issue_token(&dir, "full_record", "write");
+    run_key_rotate(&dir).success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["add", "--type", "lab_result", "-m", "attempted write"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("loomed")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("LOOMED_PASSPHRASE", TEST_PASSPHRASE)
+        .arg("commit")
+        .arg("--token")
+        .arg(&token_id)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("revoked"));
 }

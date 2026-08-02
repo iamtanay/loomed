@@ -58,9 +58,9 @@ pub struct VaultMetadata {
 
     /// The identity provider type used for this vault.
     ///
-    /// In Phase 1, this is always "passphrase". In Phase 4+, this will
-    /// reflect the configured IdP (e.g., "national_registry", "enclave").
-    /// See spec §4.2.
+    /// In v1.0, this is always "software_passphrase" (Tier 0). Later tiers
+    /// will use "national_id", "hardware_enclave", or "custodian_quorum".
+    /// See spec §4.2 and `loomed_crypto::identity::IdentityProvider::tier`.
     pub idp_type: String,
 
     /// The hex-encoded Argon2id salt used to derive the vault encryption key.
@@ -80,6 +80,22 @@ pub struct VaultMetadata {
     /// See spec §5 and §8.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_remote: Option<String>,
+
+    /// The hex-encoded salt used to derive the *current* ed25519 signing
+    /// keypair, if it differs from `argon2_salt`.
+    ///
+    /// `None` until the vault's first `loomed key rotate` — before any
+    /// rotation, the signing key is derived from `argon2_salt` exactly as
+    /// in Phase 1, so existing vaults need no migration. After a rotation,
+    /// this holds a freshly generated salt, decoupling the signing key
+    /// from `argon2_salt`.
+    ///
+    /// `argon2_salt` must never change: it also derives the vault's
+    /// AES-256 encryption key, and historical `.lmc` files stay encrypted
+    /// under it forever in v1 — full vault re-encryption on rotation is
+    /// spec §12.1 step 5, deferred past v1.0. See `FIRST_RELEASE_PLAN.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_salt: Option<String>,
 }
 
 /// A handle to an open local vault.
@@ -134,10 +150,11 @@ impl Vault {
         let metadata = VaultMetadata {
             patient_id: patient_id.as_str().to_string(),
             protocol_version: "0.2".to_string(),
-            idp_type: "passphrase".to_string(),
+            idp_type: "software_passphrase".to_string(),
             argon2_salt: argon2_salt.to_string(),
             public_key: public_key.to_string(),
             sync_remote: None,
+            signing_salt: None,
         };
 
         let toml_str = toml::to_string(&metadata).map_err(|e| StoreError::MetadataWriteFailed {
@@ -413,6 +430,54 @@ impl Vault {
         Ok(())
     }
 
+    /// Returns the hex-encoded salt currently used to derive the vault's
+    /// ed25519 signing keypair.
+    ///
+    /// Before any `loomed key rotate`, this is `argon2_salt` — identical to
+    /// Phase 1 behaviour. After a rotation, this is the freshly generated
+    /// `signing_salt`, decoupled from `argon2_salt` (which never changes;
+    /// it also derives the AES-256 encryption key). See spec §12.1 and
+    /// `FIRST_RELEASE_PLAN.md` R6.
+    pub fn current_signing_salt(&self) -> &str {
+        self.metadata
+            .signing_salt
+            .as_deref()
+            .unwrap_or(&self.metadata.argon2_salt)
+    }
+
+    /// Records a completed key rotation: the new public key and the new
+    /// signing salt used to derive it.
+    ///
+    /// Does NOT touch `argon2_salt` — the AES-256 encryption key must
+    /// never change in v1, so every historical `.lmc` file remains
+    /// decryptable exactly as before. Only future signing operations use
+    /// the new key. See spec §12.1 and `FIRST_RELEASE_PLAN.md` R6.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_public_key` — The new keypair's public key, `"ed25519:<hex>"`.
+    /// * `new_signing_salt` — The freshly generated hex-encoded salt used
+    ///   to derive the new keypair.
+    ///
+    /// # Errors
+    ///
+    /// * [`StoreError::MetadataWriteFailed`] — vault.toml could not be written.
+    /// * [`StoreError::Io`] — A filesystem error occurred.
+    pub fn rotate_signing_key(
+        &mut self,
+        new_public_key: &str,
+        new_signing_salt: &str,
+    ) -> Result<(), StoreError> {
+        self.metadata.public_key = new_public_key.to_string();
+        self.metadata.signing_salt = Some(new_signing_salt.to_string());
+        let toml_str =
+            toml::to_string(&self.metadata).map_err(|e| StoreError::MetadataWriteFailed {
+                reason: e.to_string(),
+            })?;
+        fs::write(self.vault_path.join(VAULT_TOML), toml_str)?;
+        Ok(())
+    }
+
     /// Updates the local HEAD pointer to a new commit_id.
     ///
     /// Called during `loomed sync --pull` and `loomed sync --resolve` to
@@ -556,7 +621,7 @@ mod tests {
 
         assert_eq!(vault.metadata.patient_id, "LMP-7XKQR2MNVB-6A");
         assert_eq!(vault.metadata.protocol_version, "0.2");
-        assert_eq!(vault.metadata.idp_type, "passphrase");
+        assert_eq!(vault.metadata.idp_type, "software_passphrase");
         assert_eq!(vault.metadata.argon2_salt, test_salt_hex());
     }
 
@@ -783,5 +848,52 @@ mod tests {
         for commit in &chain {
             assert!(commit.commit_id.as_str().starts_with("sha256:"));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // current_signing_salt / rotate_signing_key tests — FIRST_RELEASE_PLAN.md R6
+    // -----------------------------------------------------------------------
+
+    /// FIRST_RELEASE_PLAN.md R6: Before any rotation, current_signing_salt
+    /// must equal argon2_salt — identical to Phase 1 behaviour.
+    #[test]
+    fn current_signing_salt_defaults_to_argon2_salt() {
+        let dir = temp_dir();
+        let vault = init_test_vault(&dir);
+
+        assert_eq!(vault.current_signing_salt(), vault.metadata.argon2_salt);
+    }
+
+    /// FIRST_RELEASE_PLAN.md R6: rotate_signing_key must update public_key
+    /// and current_signing_salt without touching argon2_salt.
+    #[test]
+    fn rotate_signing_key_updates_public_key_and_signing_salt_only() {
+        let dir = temp_dir();
+        let mut vault = init_test_vault(&dir);
+        let original_argon2_salt = vault.metadata.argon2_salt.clone();
+
+        vault
+            .rotate_signing_key("ed25519:newkeyhex", "deadbeefdeadbeef")
+            .unwrap();
+
+        assert_eq!(vault.metadata.public_key, "ed25519:newkeyhex");
+        assert_eq!(vault.current_signing_salt(), "deadbeefdeadbeef");
+        assert_eq!(vault.metadata.argon2_salt, original_argon2_salt);
+    }
+
+    /// FIRST_RELEASE_PLAN.md R6: rotate_signing_key's changes must persist
+    /// across Vault::open — a fresh process must see the new key and salt.
+    #[test]
+    fn rotate_signing_key_persists_across_reopen() {
+        let dir = temp_dir();
+        let mut vault = init_test_vault(&dir);
+
+        vault
+            .rotate_signing_key("ed25519:newkeyhex", "deadbeefdeadbeef")
+            .unwrap();
+
+        let reopened = Vault::open(dir.path()).unwrap();
+        assert_eq!(reopened.metadata.public_key, "ed25519:newkeyhex");
+        assert_eq!(reopened.current_signing_salt(), "deadbeefdeadbeef");
     }
 }
